@@ -321,6 +321,78 @@ model it runs, like **Opus 5.5** or **GPT-6 Astra**, so a mixed team is easy to 
 
 <br>
 
+## Tutorial: your first hour
+
+This walks through the fork from install to a first merged change, then the extra rooms. Every step
+uses your own key or login and your own MCP servers. Nothing in this repo is tied to anyone else's
+accounts.
+
+**1. Try the simulated team (no API usage).**
+
+```sh
+git clone https://github.com/migasrias2/agentcraft
+cd agentcraft
+node tools/unix.mjs launch --backend sim
+```
+
+The first launch downloads Minecraft and Fabric, which takes a few minutes. When the studio loads, walk
+around and watch the scripted team plan, code and ask you questions. Press <kbd>`</kbd> for the
+console and type `/help`. Stop it with `node tools/unix.mjs stop --profile sim`.
+
+**2. Connect your key and a real repo.**
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...     # yours, from console.anthropic.com
+node tools/unix.mjs launch --repo ~/code/my-game
+```
+
+If you use Claude Code yourself, add `--use-claude-login` instead of setting a key.
+
+**3. Give a goal.** Press <kbd>`</kbd> and type something small, like
+`add a --version flag that prints the version from package.json`. With several repos, start with
+the repo's name (`my-game: add a pause menu`) or pick one from the list. Marlow, the lead, writes a
+plan and pins tasks to the Task Wall, and workers sit down at their desks to code in their own
+worktrees.
+
+**4. Answer questions.** When an agent needs you, it walks over. Press <kbd>J</kbd> for the decision
+queue. Tool calls outside the safe set ask first. Choose **Always allow** for
+the ones you trust, or turn on `/auto on` to stop being asked (git push and other denied actions stay
+denied).
+
+**5. Review and merge.** When work is ready, open the diff at the merge station (or `/diff @kit`),
+read it, and press **Merge**. Nothing reaches your branch without that click, and nothing is pushed.
+
+**6. Give agents your own tools.** Create `~/.agentcraft/mcp.json` with your MCP servers (example in
+[Run it with every feature](#run-it-with-every-feature)) and restart. Agents can now call Blender,
+your database or anything else you have an MCP server for. Each call asks in game first.
+
+**7. See what agents make.** Ask for something visual: `render a logo for my-game and show it to me`.
+The agent calls `show_media`, and the image appears on the big screen in the **Screening Room**
+(the east wing, through the door next to the merge station). Videos play there as a flipbook. Agents
+can also walk over with a written report as a book: right-click to read it, or `/docs` for all of them.
+
+**8. Run the Social Desk** (needs `--use-claude-login --foreman-arg --chrome`). Type
+`@nova plan a week of posts about my-game's launch`. Nova drafts posts on the calendar in the
+**Social Room** (north annex), and `/posts` or `/calendar` shows them. Approve each post once
+(`/approve <n>` or the calendar's Approve button). Sable posts it at its time from your Chrome and
+reports the link.
+
+**9. Run a YouTube channel in the Content Room** (north annex, east of the Social Room). Type
+`/content` to open the Content Studio, add your channel and a short brief, and add reference videos
+you like. Iris pitches ideas, and you approve, reject or comment. Reel studies the references frame by
+frame and makes the cut. You approve the cut with a time, and Cleo uploads it in YouTube Studio
+(Chrome). Vega reads the analytics after 48 hours and 7 days and updates the channel's playbook, so
+the next ideas learn from the numbers. Autopilot per channel skips your two approvals; it is off by
+default.
+
+**10. Take a break.** The **Gallery** hangs every image agents showed you, plus anything you drop in
+`~/Pictures/AgentCraft Gallery`. The **Casino Lounge** (west wing, through the library) has a
+blackjack table with play chips.
+
+If a room is missing in an older world, rebuild the HQ with `/agentcraft hq`.
+
+<br>
+
 ## Controls
 
 | Key | What it does |
@@ -390,6 +462,49 @@ flowchart LR
 - **Spend:** a running total in `/status` and the console header.
 - **Protocol:** documented in [docs/protocol.md](docs/protocol.md), generated from the schemas and
   kept in sync by `npm run check`.
+
+</details>
+
+<details>
+<summary><b>How the fork's extras work</b></summary>
+
+<br>
+
+```mermaid
+flowchart LR
+    subgraph foreman ["Foreman"]
+        Studio["Studio team<br/>(lead + workers)"]
+        Social["Social team<br/>(Nova, Sable)"]
+        Content["Content team<br/>(Iris, Reel, Vega, Cleo)"]
+        Policy["Policy<br/>(ask / allow / deny)"]
+    end
+    MCP["Your MCP servers<br/>(~/.agentcraft/mcp.json)"]
+    Chrome["Claude in Chrome<br/>(your login)"]
+    Brain["Your notes<br/>(--brain)"]
+    Studio & Social & Content --> Policy
+    Policy --> MCP
+    Policy --> Chrome
+    Studio & Social & Content -.->|read only| Brain
+```
+
+- **Desk teams.** Nova, Sable, Iris, Reel, Vega and Cleo are separate teams next to the coding
+  studio. They have their own tools (calendar, channels, videos, stats) and their own rooms, and
+  their state is saved with everything else in the Foreman.
+- **Approval gates.** Posts and videos go out only after you approve them, at the time you approved.
+  Before a publish, the Foreman checks the approved file's hash. Chrome is allowed only during that
+  publish and only on the platform's site. A publish that gets interrupted is marked failed and never
+  retried on its own. Content autopilot is opt-in per channel.
+- **Your MCP servers and Chrome** load next to AgentCraft's own tools, and every call goes through the
+  same policy as everything else. It asks in game until you choose Always allow, unless `/auto` is
+  on. Hard denies such as `git push` always win.
+- **Brain.** `--brain <dir>` gives every agent `search_brain` and `read_brain` (read-only, never
+  outside the folder or into dot folders) and `brain_inbox`, which appends one line to `Inbox.md` and
+  refuses anything that looks like a secret.
+- **Media and docs.** `show_media` puts an image or video (file or URL) on the big screen. Videos are cut
+  into a silent flipbook (ffmpeg) for the Screening Room, and "Open in player" plays the original.
+  `hand_over` saves a document until you read it.
+- **Video study.** `study_video` uses yt-dlp and ffmpeg to produce timestamped frames, contact sheets,
+  scene cuts, pacing and a transcript, so Reel can study how a reference is built.
 
 </details>
 
