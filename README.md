@@ -57,6 +57,61 @@ machine's time zone when it isn't set.
 > posting may break a platform's terms. Keep the approval steps on, and check the rules of each site
 > you use.
 
+### Run it with every feature
+
+Most of the fork works on an API key. Anything that drives a browser needs Claude in Chrome, and that
+only loads on a Claude Code login (`--use-claude-login`, for your own personal use; see Quick start).
+
+| | API key (`ANTHROPIC_API_KEY`) | Claude login (`--use-claude-login`) |
+| --- | --- | --- |
+| Coding studio, repo routing, new repos, `/auto` | ✅ | ✅ |
+| Your MCP servers, `--brain` | ✅ | ✅ |
+| Screening Room, hand-over docs, Gallery, Casino | ✅ | ✅ |
+| Content Room: ideas, video study, cut review | ✅ | ✅ |
+| Claude in Chrome (`--chrome`) | ❌ | ✅ |
+| Social Desk posting (Sable) | ❌ | ✅ |
+| Content Room publishing (Cleo) and YouTube Studio analytics (Vega) | ❌ | ✅ |
+| claude.ai connectors (Gmail, Drive, Calendar...) | ❌ | ✅ |
+
+**1. Install the extras.** Java 25 and Node 22+ as in Quick start, then for videos:
+`brew install ffmpeg yt-dlp` (or your package manager). For Chrome, install
+the Claude in Chrome extension and sign in with the same account as `claude`.
+
+**2. Add your MCP servers (optional).** Put them in `~/.agentcraft/mcp.json`, in the same shape as
+Claude Code's `.mcp.json`. The name `agentcraft` is reserved.
+
+```json
+{
+  "mcpServers": {
+    "blender": { "command": "uvx", "args": ["blender-mcp"] },
+    "my-api": { "type": "http", "url": "http://localhost:8787/mcp" }
+  }
+}
+```
+
+**3. Launch with everything on:**
+
+```sh
+node tools/unix.mjs launch --repo ~/code/my-game --repo ~/code/my-site \
+  --use-claude-login \
+  --foreman-arg --chrome \
+  --foreman-arg --brain --foreman-arg ~/notes
+```
+
+With an API key, leave out `--use-claude-login` and `--chrome`. `--repo` can repeat, and goals go to
+the repo they name (`my-game: add a pause menu`). To keep each project's state apart, add
+`--home ~/.agentcraft-projects/<name>` per project.
+
+A shell helper saves typing (zsh/bash, in `~/.zshrc`):
+
+```sh
+ac() {  # ac my-game -> one studio for ~/code/my-game
+  (cd ~/agentcraft && node tools/unix.mjs stop >/dev/null 2>&1; \
+   node tools/unix.mjs launch --repo "$HOME/code/$1" --home "$HOME/.agentcraft-projects/$1" \
+     --use-claude-login --foreman-arg --chrome)
+}
+```
+
 Known: four foreman tests (`codex-backend` ×3 and `policy` "ps set-content outside") fail on macOS.
 They fail on upstream too and are not caused by this fork.
 
@@ -211,7 +266,7 @@ Minecraft: Java Edition.
 Then:
 
 ```powershell
-git clone https://github.com/blendi-remade/agentcraft
+git clone https://github.com/migasrias2/agentcraft
 cd agentcraft
 
 tools\launch.ps1 -Backend sim                    # try it first: a simulated team, no API usage
