@@ -18,14 +18,14 @@ import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 
 /**
- * What hangs in the Gallery: every image in {@code ~/Pictures/AgentCraft Galeria} plus everything agents
+ * What hangs in the Gallery: every image in {@code ~/Pictures/AgentCraft Gallery} plus everything agents
  * handed the user with show_media ({@link MediaStore}), newest first, split into pages of
  * {@link GalleryLayout#PAGE_SIZE} (one per bay). The folder is listed on a background thread every few
  * seconds while the player is near the room (a directory listing only; images are decoded lazily by
  * {@link GalleryTextures}), so new files show up without a restart. Render thread only, except the scan.
  */
 final class GalleryModel {
-	static final Path FOLDER = Path.of(System.getProperty("user.home"), "Pictures", "AgentCraft Galeria");
+	static final Path FOLDER = Path.of(System.getProperty("user.home"), "Pictures", "AgentCraft Gallery");
 	private static final long SCAN_EVERY_MS = 4000;
 	private static final int MAX_FILES = 1000;
 	private static final long MAX_BYTES = 40L * 1024 * 1024;
@@ -172,7 +172,7 @@ final class GalleryModel {
 				return null;
 			}
 			long modified = Files.getLastModifiedTime(f).toMillis();
-			return new GalleryItem("file:" + f.toAbsolutePath(), stripExtension(name), "Galeria", f.toAbsolutePath(), null, modified);
+			return new GalleryItem("file:" + f.toAbsolutePath(), stripExtension(name), "Gallery", f.toAbsolutePath(), null, modified);
 		} catch (IOException | RuntimeException e) {
 			return null;
 		}

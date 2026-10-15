@@ -165,7 +165,7 @@ final class GalleryRenderer {
 		int total = GalleryModel.items().size();
 		String top = total == 0 ? "Gallery is empty" : "Gallery · page " + (GalleryModel.page() + 1) + " / " + GalleryModel.pages() + " · " + total
 			+ (total == 1 ? " painting" : " paintings");
-		String bottom = total == 0 ? "Put images in Pictures/AgentCraft Galeria" : GalleryModel.pages() > 1 ? "Right-click to turn the page"
+		String bottom = total == 0 ? "Put images in Pictures/AgentCraft Gallery" : GalleryModel.pages() > 1 ? "Right-click to turn the page"
 			: "Right-click a painting to see it big";
 		Font font = Minecraft.getInstance().font;
 		ps.pushPose();

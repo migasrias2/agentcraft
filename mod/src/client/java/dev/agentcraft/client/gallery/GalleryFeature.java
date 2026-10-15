@@ -18,7 +18,7 @@ import net.minecraft.world.phys.Vec3;
 
 /**
  * The Gallery room (north-west annex of the HQ hall): framed paintings from real images on its walls.
- * Sources are the folder {@code ~/Pictures/AgentCraft Galeria} and the images agents handed you with
+ * Sources are the folder {@code ~/Pictures/AgentCraft Gallery} and the images agents handed you with
  * show_media (see {@link GalleryModel}); {@link GalleryRenderer} draws them, right-clicking a painting
  * opens the big view and right-clicking the lectern turns the page. Client-only; the room and its bays
  * are positions only ({@link GalleryLayout}), found by where you click, like the casino table.
@@ -89,7 +89,7 @@ public final class GalleryFeature {
 		GalleryModel.nextPage();
 		if (mc.player != null) {
 			int total = GalleryModel.items().size();
-			String msg = total == 0 ? "The gallery is empty. Put images in Pictures/AgentCraft Galeria"
+			String msg = total == 0 ? "The gallery is empty. Put images in Pictures/AgentCraft Gallery"
 				: "Gallery page " + (GalleryModel.page() + 1) + " / " + GalleryModel.pages();
 			mc.player.sendOverlayMessage(Component.literal(msg));
 		}
