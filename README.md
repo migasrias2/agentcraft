@@ -10,7 +10,7 @@
 [![Minecraft 26.3](https://img.shields.io/badge/Minecraft-26.3-8fa98b)](https://www.minecraft.net)
 [![Fabric](https://img.shields.io/badge/mod%20loader-Fabric-d97757)](https://fabricmc.net)
 [![Claude Agent SDK](https://img.shields.io/badge/agents-Claude%20Agent%20SDK-2fa3a0)](https://code.claude.com/docs/en/agent-sdk/overview)
-[![Tests](https://img.shields.io/badge/tests-548%20passing-3b2a20)](foreman/test)
+[![Tests](https://img.shields.io/badge/tests-718%20passing-3b2a20)](foreman/test)
 
 <img src="docs/img/readme/hero.jpg" alt="The AgentCraft HQ at golden hour" width="100%">
 
@@ -27,6 +27,38 @@ you with a question. When work is ready, you review the real diff and press **Me
 touches your branch without that click, and nothing is ever pushed.
 
 Close the game and the agents keep working. Open it again and the studio catches up.
+
+<br>
+
+## What this fork adds
+
+This is a fork of [blendi-remade/agentcraft](https://github.com/blendi-remade/agentcraft) with extra
+rooms and agent teams. Everything below is off or asks first unless you switch it on.
+
+| Feature | What it does | How to turn it on |
+| --- | --- | --- |
+| **Your MCP servers** | Claude agents get your own MCP servers (Blender, Roblox Studio, Supabase...) next to AgentCraft's. Each call asks in game until you choose Always allow. | `--mcp-config <file>` or `~/.agentcraft/mcp.json` (Claude Code `.mcp.json` shape) |
+| **Claude in Chrome** | Agents can drive your paired browser. Every action asks in game. | `--chrome --use-claude-login` |
+| **Repo routing** | `repo: goal`, or naming a repo in the goal, sends it there. Otherwise you get a searchable picker. | always on |
+| **New repos from the game** | Use "+ New repo" in the picker or `/repo new <name>` to create a repo and start a goal in it. | `--new-repo-dir <dir>` (default: home) |
+| **Auto-approve** | Agents run tools without asking. Git push and other hard denies stay denied. | `/auto on\|off` or `--auto-approve` |
+| **Second brain** | Agents can search and read your notes vault (e.g. Obsidian) and add lines to its `Inbox.md`. | `--brain <dir>` |
+| **Screening Room** | Agents hand you images and videos with `show_media`, next to a wall of every agent's live screen. | always on (videos need `ffmpeg`) |
+| **Hand-over docs** | Agents walk over holding a book with their `.md` deliverable. Right-click it or use `/docs`. | always on |
+| **Social Desk** | Nova plans an X / LinkedIn calendar. Sable posts what you approved, at its time, through Chrome. | `@nova` (needs `--chrome`) |
+| **Content Room** | Iris, Reel, Vega and Cleo run YouTube channels: pitches you approve, frame-by-frame study of reference videos, cut review, publishing in YouTube Studio, analytics and post-mortems. Autopilot per channel is off by default. | `/content` (needs `--chrome`, `yt-dlp`, `ffmpeg`) |
+| **Gallery** | Framed paintings from `~/Pictures/AgentCraft Gallery` plus everything agents showed you. | always on |
+| **Casino Lounge** | Blackjack with play chips (no real money) while the agents work. | always on |
+
+The social and content calendars use `AGENTCRAFT_TZ` (an IANA name such as `Europe/Lisbon`), or your
+machine's time zone when it isn't set.
+
+> **Posting for you.** The Social Desk and Content Room post by driving your own browser. Automated
+> posting may break a platform's terms. Keep the approval steps on, and check the rules of each site
+> you use.
+
+Known: four foreman tests (`codex-backend` ×3 and `policy` "ps set-content outside") fail on macOS.
+They fail on upstream too and are not caused by this fork.
 
 <br>
 
