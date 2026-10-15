@@ -6,6 +6,7 @@ import dev.agentcraft.client.foreman.ForemanListener;
 import dev.agentcraft.client.foreman.ForemanState;
 import dev.agentcraft.client.foreman.Protocol.Agent;
 import dev.agentcraft.client.foreman.Protocol.Decision;
+import dev.agentcraft.client.foreman.Protocol.Doc;
 import dev.agentcraft.client.foreman.Protocol.Notify;
 import dev.agentcraft.client.foreman.Protocol.NotifyLevel;
 import dev.agentcraft.client.ui.Kit;
@@ -46,6 +47,16 @@ public final class Toasts implements HudElement {
 			@Override
 			public void onNotify(Notify n) {
 				push(n);
+			}
+
+			@Override
+			public void onDoc(@Nullable Doc previous, Doc doc) {
+				// a fresh hand-over (not the read flag flipping, not an old doc replayed)
+				if (previous == null && !doc.read() && System.currentTimeMillis() - doc.at() < 120_000) {
+					String who = UiBits.agentName(doc.agentId());
+					push(new Notify(NotifyLevel.INFO, who + ": handed you \"" + doc.title() + "\" - right-click " + who + " to read", null,
+						System.currentTimeMillis()));
+				}
 			}
 
 			@Override

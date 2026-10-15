@@ -7,6 +7,8 @@ import dev.agentcraft.client.hud.UiBits;
 import dev.agentcraft.client.foreman.Protocol.FeedItem;
 import dev.agentcraft.client.foreman.Protocol.Goal;
 import dev.agentcraft.client.foreman.Protocol.LogEntry;
+import dev.agentcraft.client.content.ContentState;
+import dev.agentcraft.client.social.SocialCalendar;
 import dev.agentcraft.client.ui.TextUtil;
 import dev.agentcraft.client.ui.UiStyle;
 import java.util.ArrayList;
@@ -28,7 +30,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class MonitorScreen {
 	enum Mode {
-		LIVE, FEED, OFF_SHIFT, NO_AGENT, CONNECTING
+		LIVE, FEED, OFF_SHIFT, NO_AGENT, CONNECTING, MEDIA, CALENDAR, CONTENT
 	}
 
 	/**
@@ -44,6 +46,8 @@ final class MonitorScreen {
 	static final float MAX_SHIFT = 2 * LogRows.LINE + 4;
 
 	final BlockPos origin;
+	/** Facing of the panel (set by the renderer; used to find which panel a clicked block belongs to). */
+	net.minecraft.core.Direction facing = net.minecraft.core.Direction.NORTH;
 	long lastUsedNanos;
 
 	// --- inputs of the current layout
@@ -94,6 +98,12 @@ final class MonitorScreen {
 	final DisplayDraw.Rects dyn = new DisplayDraw.Rects();
 	final DisplayDraw.Rects veil = new DisplayDraw.Rects();
 	final DisplayDraw.Rects badge = new DisplayDraw.Rects();
+	/** Live screen frame border and label chip (separate from the offline badge: submits are lazy). */
+	final DisplayDraw.Rects imgFrame = new DisplayDraw.Rects();
+	final DisplayDraw.Rects imgChip = new DisplayDraw.Rects();
+	/** Media screen: caption bar and counter chip. */
+	final DisplayDraw.Rects mediaBar = new DisplayDraw.Rects();
+	final DisplayDraw.Rects mediaChip = new DisplayDraw.Rects();
 
 	// --- scroll animation
 	float shiftFrom;
@@ -121,7 +131,13 @@ final class MonitorScreen {
 	boolean sync(@Nullable ForemanState s, String binding, ScreenStyle st, int ppb, int panelW, int panelH, long logSeq, long agentSeq, long now) {
 		Mode m;
 		String id = binding;
-		if (s == null || !s.hasData()) {
+		if (MediaScreenDraw.BINDING.equals(binding)) {
+			m = Mode.MEDIA;
+		} else if (SocialCalendar.BINDING.equals(binding)) {
+			m = Mode.CALENDAR;
+		} else if (ContentState.BINDING.equals(binding)) {
+			m = Mode.CONTENT;
+		} else if (s == null || !s.hasData()) {
 			m = Mode.CONNECTING;
 		} else if ("feed".equals(binding)) {
 			m = Mode.FEED;
@@ -254,6 +270,7 @@ final class MonitorScreen {
 				activityY = y + LogRows.LINE;
 				headerBottom = y + LogRows.LINE + 10;
 			}
+			case MEDIA, CALENDAR, CONTENT -> headerBottom = by0 + padTop - 3;
 			case CONNECTING -> {
 				// keep whose screen this is (from the cast, no Foreman needed), then why it is empty
 				dotFamily = "idle";
@@ -418,7 +435,7 @@ final class MonitorScreen {
 		float y0 = by0 - 0.5f;
 		float y1 = by1 + 0.5f;
 		bg.add(x0, y0, x1, y1, z0, st.bgTop(), st.bgBottom(), light);
-		boolean band = mode != Mode.CONNECTING || name != null;
+		boolean band = mode != Mode.MEDIA && mode != Mode.CALENDAR && mode != Mode.CONTENT && (mode != Mode.CONNECTING || name != null);
 		float bandBottom = band ? headerBottom + 2 : y0;
 		for (float y = 0; y < panelH * ppb; y += 2 * texel) {
 			float sy0 = Math.max(y + texel, y0);

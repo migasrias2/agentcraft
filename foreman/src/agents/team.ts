@@ -36,17 +36,27 @@ import { renderDiffText } from '../diff.js';
 import { formatInbox } from '../bus.js';
 import { descendantsOf, killSnapshot, killTree, orphansOf, processTable, type ProcEntry } from '../util/proc.js';
 import { truncate } from '../util/text.js';
-import { leadSystemPrompt, planPrompt, RESUME_PROMPT, reviewPrompt, workerSystemPrompt, workPrompt } from './prompts.js';
+import { contentInstructions, leadSystemPrompt, planPrompt, RESUME_PROMPT, reviewPrompt, socialInstructions, workerSystemPrompt, workPrompt } from './prompts.js';
 import { fetchPulls, githubOrigin, prRefs, pullBriefs, type PullRequest } from '../pulls.js';
 import type { Engine, EngineId, PermissionGate, Role, TurnStats } from './engine.js';
 import { agentTools, type ToolHooks, type TurnHandle } from './tools.js';
 import { modelLabel } from './models.js';
 import { userName } from '../user.js';
+import { CONTENT_PUBLISHER_ID, SOCIAL_PUBLISHER_ID } from '../cast.js';
+import { publishPrompt, type PublishOutcome } from '../social.js';
+import { publishPrompt as publishVideoPrompt } from '../content.js';
+import type { ContentChannel, ContentVideo } from '../protocol.js';
 
 // policy: our own team tools are trusted (the Claude engine exposes them as this MCP server)
 const TEAM_MCP_SERVER = 'agentcraft';
+/** Claude in Chrome tools: the calendar approval covers them while a post is being published */
+const CHROME_TOOL_PREFIX = 'mcp__claude-in-chrome__';
+/** during a publish turn Chrome may only navigate to these sites without asking */
+const SOCIAL_HOSTS = /(^|\.)(x\.com|twitter\.com|linkedin\.com|t\.co|lnkd\.in)$/i;
+/** the same for a video upload: YouTube, Studio and Google's sign-in */
+const CONTENT_HOSTS = /(^|\.)(youtube\.com|youtu\.be|accounts\.google\.com)$/i;
 
-type JobKind = 'plan' | 'work' | 'review' | 'followup';
+type JobKind = 'plan' | 'work' | 'review' | 'followup' | 'social' | 'content' | 'analytics' | 'publish';
 type AbortReason = 'pause' | 'stop' | 'shutdown' | 'cancel' | 'timeout';
 
 interface Job {
@@ -62,6 +72,10 @@ interface Job {
   nudges?: number;
   /** continuing an interrupted job (restart, pause): log the prompt */
   resumed?: boolean;
+  /** publish: the Social Desk post this turn publishes */
+  postId?: string;
+  /** publish: the Content Room video this turn uploads */
+  videoId?: string;
 }
 
 interface Inflight {
@@ -171,6 +185,8 @@ export class TeamBackend implements Backend {
   private readonly pullFetcher: PullFetcher;
   /** the model each agent's last turn really ran (shown on its nameplate) */
   private reportedModels = new Map<string, { engine: EngineId; label: string }>();
+  /** publish turns in flight: settled when the turn is over (the Social Desk waits for it) */
+  private publishWaiters = new Map<string, (o: PublishOutcome) => void>();
 
   constructor(
     protected fm: Foreman,
@@ -210,6 +226,11 @@ export class TeamBackend implements Backend {
     return this.cfg.workers.filter((w) => this.fm.agent(w));
   }
 
+  /** The desk agents (Social Desk, Content Room): their own rooms, never the coding scheduler's. */
+  private get deskTeam(): string[] {
+    return this.fm.agents().filter((a) => this.fm.isDesk(a.id)).map((a) => a.id);
+  }
+
   /** The engine that runs an agent's turns. */
   engineFor(agentId: string): Engine {
     const e = this.opts.engines;
@@ -231,7 +252,7 @@ export class TeamBackend implements Backend {
 
   /** Every engine on the team (each is checked at start). */
   private enginesInUse(): Engine[] {
-    return [...new Set([LEAD, ...this.team].map((id) => this.engineFor(id)))];
+    return [...new Set([LEAD, ...this.team, ...this.deskTeam].map((id) => this.engineFor(id)))];
   }
 
   /** e.g. "Claude (lead opus, workers sonnet)" or "Claude lead opus · Codex workers gpt-5" */
@@ -260,7 +281,7 @@ export class TeamBackend implements Backend {
 
   async start(): Promise<void> {
     for (const a of this.fm.agents()) {
-      const onTeam = (a.id === LEAD || this.team.includes(a.id)) && !this.isStopped(a.id);
+      const onTeam = (a.id === LEAD || this.team.includes(a.id) || this.fm.isDesk(a.id)) && !this.isStopped(a.id);
       this.fm.setAgent(a.id, { active: onTeam });
       if (!onTeam) this.fm.setAgent(a.id, { state: 'idle', station: 'lounge', activity: this.isStopped(a.id) ? 'stopped - off shift' : 'off shift' });
       else if (a.activity === 'off shift' || a.activity.startsWith('stopped')) this.fm.setAgent(a.id, { activity: 'ready' });
@@ -268,6 +289,13 @@ export class TeamBackend implements Backend {
     // the spend survives restarts: every session's cost is persisted, so the total is their sum
     const spent = Object.values(this.fm.store.data.sessions).reduce((sum, s) => sum + (s.costUsd || 0), 0);
     if (spent > 0) this.fm.setStatus({ costUsd: Math.round(spent * 1000) / 1000 });
+    this.fm.social.setRunner({ canPublish: () => this.canPublish(), publish: (post) => this.publishPost(post) });
+    this.fm.content.setRunner({
+      canRun: (id) => this.canRunDesk(id),
+      wake: (id, prompt, o) => this.wakeContent(id, prompt, o?.sessionKey, o?.kind),
+      studioAvailable: () => this.cfg.chrome && this.cfg.useClaudeLogin,
+      publish: (video, channel) => this.publishVideo(video, channel),
+    });
     this.showEngines();
     await this.checkAuth();
     this.showEngines(); // the auth check may have learned the configured model
@@ -277,7 +305,7 @@ export class TeamBackend implements Backend {
       this.recover();
     }
     // the user's messages that no agent read before the restart
-    for (const id of [LEAD, ...this.team]) this.deliverPending(id);
+    for (const id of [LEAD, ...this.team, ...this.deskTeam]) this.deliverPending(id);
     void this.fm.repos.sweepPendingRemovals().catch((e) => this.fm.log.debug(`sweep: ${(e as Error).message}`));
     this.tick();
   }
@@ -333,7 +361,8 @@ export class TeamBackend implements Backend {
     // permission prompts from a dead process are moot; the resumed agent retries the tool
     for (const d of this.fm.decisions.open().filter((x) => x.kind === 'permission')) this.fm.decisions.cancel(d.id, 'Foreman restarted');
     for (const [agentId, inf] of Object.entries(st.inflight)) {
-      if (this.isStopped(agentId) || !this.fm.agent(agentId)) {
+      // a publish turn is never resumed: it may already have posted (the desk marks that post failed)
+      if (inf.kind === 'publish' || this.isStopped(agentId) || !this.fm.agent(agentId)) {
         delete st.inflight[agentId];
         continue;
       }
@@ -398,6 +427,8 @@ export class TeamBackend implements Backend {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.fm.social.setRunner(undefined);
+    this.fm.content.setRunner(undefined);
     if (this.tickTimer) clearTimeout(this.tickTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
     const turns = [...this.running.values()];
@@ -555,7 +586,7 @@ export class TeamBackend implements Backend {
   }
 
   private workersRunning(): number {
-    return [...this.running.keys()].filter((id) => id !== LEAD).length;
+    return [...this.running.keys()].filter((id) => id !== LEAD && !this.fm.isDesk(id)).length;
   }
 
   private isFree(w: string): boolean {
@@ -640,7 +671,7 @@ export class TeamBackend implements Backend {
     if (!a || a.paused || !a.active || this.isStopped(agentId)) return;
     const q = this.queues.get(agentId);
     if (!q?.length) return;
-    if (agentId !== LEAD && this.workersRunning() >= this.cfg.maxConcurrent) return;
+    if (agentId !== LEAD && !this.fm.isDesk(agentId) && this.workersRunning() >= this.cfg.maxConcurrent) return;
     const job = q.shift()!;
     const p = this.runJob(job).finally(() => {
       this.turnPromises.delete(p);
@@ -655,6 +686,9 @@ export class TeamBackend implements Backend {
   }
 
   private cwdFor(job: Job): { cwd: string; role: 'lead' | 'worker' } {
+    // the Social Desk works in a plain folder (not a repository): its sandbox, with worker semantics
+    if (this.fm.isSocial(job.agentId)) return { cwd: this.fm.social.dir, role: 'worker' };
+    if (this.fm.isContent(job.agentId)) return { cwd: this.fm.content.dir, role: 'worker' };
     if (job.agentId === LEAD) {
       const goal = job.goalId ? this.fm.goal(job.goalId) : this.fm.currentGoal();
       const repo = goal?.repoId ? this.fm.repos.get(goal.repoId) : this.fm.repos.defaultRepo();
@@ -666,11 +700,36 @@ export class TeamBackend implements Backend {
     return { cwd: this.fm.repos.requireWorktree(t.repoId, t.worktree).path, role: 'worker' };
   }
 
+  /** Chrome calls that open a URL must stay on the platform's own sites during a publish turn. */
+  private chromeTargetOk(input: Record<string, unknown>, hosts: RegExp = SOCIAL_HOSTS): boolean {
+    const url = typeof input.url === 'string' ? input.url.trim() : undefined;
+    if (!url || /^(back|forward|reload)$/i.test(url)) return true;
+    try {
+      return hosts.test(new URL(/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`).hostname);
+    } catch {
+      return false;
+    }
+  }
+
   /** The policy, and the user for whatever it cannot allow by itself (a permission decision). */
-  private permissionGate(agentId: string, role: Role, cwd: string, turn: TurnHandle): PermissionGate {
+  private permissionGate(agentId: string, role: Role, cwd: string, turn: TurnHandle, publishPostId?: string, publishVideoId?: string, studioRead = false): PermissionGate {
     return async (toolName, input, signal, title) => {
       // a stopped/paused/cancelled turn runs nothing more, even if its CLI has not exited yet
       if (turn.signal.aborted) return { allow: false, message: `Your turn was stopped by ${userName()}.`, interrupt: true };
+      // publishing a post the user approved in the calendar: that approval covers Chrome (and only
+      // while the post is 'posting', and only on the platforms' own sites). Anything else asks as usual.
+      if (publishPostId && toolName.startsWith(CHROME_TOOL_PREFIX) && this.fm.social.isPublishing(publishPostId) && this.chromeTargetOk(input)) {
+        return { allow: true };
+      }
+      // the same for a video the user approved in the Content Studio: YouTube, Studio and Google's sign-in only
+      // (file uploads only with this video's own cut and thumbnail)
+      if (publishVideoId && toolName.startsWith(CHROME_TOOL_PREFIX) && this.fm.content.isPublishing(publishVideoId) && this.chromeTargetOk(input, CONTENT_HOSTS) && (toolName !== `${CHROME_TOOL_PREFIX}file_upload` || this.fm.content.uploadPathsOk(publishVideoId, input))) {
+        return { allow: true };
+      }
+      // a Studio read (Vega, numbers only): Chrome on YouTube / Studio / Google sign-in, never file uploads; read-only is the prompt's rule
+      if (studioRead && toolName.startsWith(CHROME_TOOL_PREFIX) && toolName !== `${CHROME_TOOL_PREFIX}file_upload` && this.chromeTargetOk(input, CONTENT_HOSTS)) {
+        return { allow: true };
+      }
       const verdict = classifyToolUse(toolName, input, {
         role,
         cwd,
@@ -683,6 +742,10 @@ export class TeamBackend implements Backend {
       if (verdict.action === 'deny') {
         this.fm.agentLog(agentId, 'error', `blocked: ${describeToolCall(toolName, input)} (${verdict.reason})`);
         return { allow: false, message: verdict.reason };
+      }
+      if (this.fm.autoApprove) {
+        this.fm.agentLog(agentId, 'tool', `auto-allowed: ${truncate(describeToolCall(toolName, input), 160)}`);
+        return { allow: true };
       }
       const prev = this.fm.agent(agentId);
       const prevState = prev ? { state: prev.state, station: prev.station, activity: prev.activity } : undefined;
@@ -778,14 +841,16 @@ export class TeamBackend implements Backend {
       this.fm.store.markDirty();
 
       let systemAppend: string;
-      if (role === 'lead') systemAppend = leadSystemPrompt(this.fm, this.team);
+      if (this.fm.isSocial(agentId)) systemAppend = socialInstructions(this.fm, agentId);
+      else if (this.fm.isContent(agentId)) systemAppend = contentInstructions(this.fm, agentId);
+      else if (role === 'lead') systemAppend = leadSystemPrompt(this.fm, this.team);
       else {
         const t = this.fm.tasks.require(job.taskId!);
         systemAppend = workerSystemPrompt(this.fm, agentId, this.fm.repos.requireWorktree(t.repoId!, t.worktree!));
       }
       const model = engine.model(role);
       this.fm.agentLog(agentId, 'text', `${resume ? 'Resuming' : 'Starting'} ${job.kind}${job.taskId ? ` ${job.taskId}` : ''} (${engine.id === 'claude' ? model : `${engine.label} ${model}`})`);
-      if (job.kind === 'followup' || job.resumed) this.fm.agentLog(agentId, 'text', truncate(job.prompt, 400));
+      if (job.kind === 'followup' || job.kind === 'social' || job.kind === 'content' || job.kind === 'analytics' || job.kind === 'publish' || job.resumed) this.fm.agentLog(agentId, 'text', truncate(job.prompt, 400));
       const timer = setTimeout(() => this.abortTurn(entry, 'timeout'), TURN_TIMEOUT_MS);
       timer.unref?.();
       // messages that arrived while the agent was not in a turn ride along with this prompt
@@ -803,8 +868,8 @@ export class TeamBackend implements Backend {
           writableRoots: await this.writableRoots(role, job),
           abort,
           turn,
-          permission: this.permissionGate(agentId, role, cwd, turn),
-          tools: agentTools(this.fm, agentId, role, this.hooks, turn),
+          permission: this.permissionGate(agentId, role, cwd, turn, job.kind === 'publish' ? job.postId : undefined, job.kind === 'publish' ? job.videoId : undefined, job.kind === 'analytics'),
+          tools: agentTools(this.fm, agentId, role, this.hooks, turn, cwd),
           // a stopped turn's whole process tree is ended before its worktree is handed on
           onProcess: (child) => {
             entry.child = child;
@@ -839,6 +904,12 @@ export class TeamBackend implements Backend {
     }
 
     const reason = entry.reason;
+    // the Social Desk waits for a publish turn to be over (a paused one is resumed, not over)
+    const publishKey = job.postId ?? job.videoId;
+    if (publishKey && reason !== 'pause' && reason !== 'shutdown') {
+      const failed = !stats || stats.isError || reason === 'stop' || reason === 'timeout';
+      this.settlePublish(publishKey, failed ? { ok: false, error: reason === 'stop' ? `${this.fm.nameOf(agentId)} was stopped while publishing — check the platform before re-approving` : reason === 'timeout' ? 'the publish turn timed out — check the platform before re-approving' : `the publish turn failed (${this.failure(stats)}) — check the platform before re-approving` } : { ok: true });
+    }
     if (reason === 'shutdown') return; // inflight stays persisted -> resumed next start (stop() reaps)
     // an aborted turn's CLI and its processes must not linger (they would keep working); started
     // before anything is re-queued, so the next turn of this agent waits for it
@@ -912,6 +983,10 @@ export class TeamBackend implements Backend {
 
   private async afterTurn(job: Job, stats: TurnStats | undefined): Promise<void> {
     const failed = !stats || stats.isError;
+    if (this.fm.isDesk(job.agentId)) {
+      this.fm.setAgent(job.agentId, failed ? { state: 'error', station: 'desk', activity: `turn failed: ${this.failure(stats)}` } : { state: 'idle', station: 'desk', activity: 'ready' });
+      return;
+    }
     if (job.agentId === LEAD) {
       this.fm.setAgent(LEAD, failed ? { state: 'error', station: 'meeting', activity: `turn failed: ${this.failure(stats)}` } : { state: 'idle', station: 'meeting', activity: 'watching the task wall' });
       // any lead turn for a goal that is still planning (plan, or a plan resumed after a
@@ -1068,6 +1143,10 @@ export class TeamBackend implements Backend {
     // in a turn: delivered with its next agentcraft tool result, or right after the turn ends
     // (deliverPending). Paused mid-turn: delivered with the resumed job's prompt.
     if (this.running.has(id) || this.pausedJobs.has(id)) return;
+    if (this.fm.isDesk(id)) {
+      this.onDeskMessage(id, text, note);
+      return;
+    }
     // every unread message from the user to this agent goes into one follow-up
     const mine = this.fm.bus.inbox(id).filter((m) => m.from === 'user' && (m.to === id || (to === 'all' && m.to === 'all')));
     const body = mine.length ? mine.map((m) => m.text).join('\n\n') : text;
@@ -1098,6 +1177,79 @@ export class TeamBackend implements Backend {
       return;
     }
     this.enqueue({ kind: 'followup', agentId: id, taskId: t.id, ...(t.goalId ? { goalId: t.goalId } : {}), sessionKey: `${id}:${t.id}`, prompt });
+  }
+
+  /** A message to a desk agent (Nova, Sable, Iris, Reel, Vega, Cleo): a turn of their own starts now (queued behind the one they are in). */
+  private onDeskMessage(id: string, text: string, note?: string): void {
+    const content = this.fm.isContent(id);
+    const mine = this.fm.bus.inbox(id).filter((m) => m.from === 'user' && m.to === id);
+    const body = mine.length ? mine.map((m) => m.text).join('\n\n') : text;
+    this.fm.bus.markRead(id, mine.map((m) => m.id));
+    this.fm.setAgent(id, { state: 'thinking', station: 'desk', activity: 'reading your message' });
+    this.enqueue({
+      kind: content ? 'content' : 'social',
+      agentId: id,
+      sessionKey: content ? `${id}:content` : `${id}:social`,
+      prompt: `Message from ${userName()}: ${body}\n\n${note ? `${note}\n\n` : ''}Reply briefly with send_message(to "user") and act on it with your ${content ? 'content' : 'calendar'} tools if needed.`,
+    });
+  }
+
+  // ---- Social Desk: publishing ---------------------------------------------------------------
+
+  /** The scheduler may start a publish turn: Sable is on shift and not paused. */
+  private canPublish(): boolean {
+    const a = this.fm.agent(SOCIAL_PUBLISHER_ID);
+    return !!a && a.active && !a.paused && !this.isStopped(SOCIAL_PUBLISHER_ID) && !this.authFailed && !this.stopping;
+  }
+
+  /** Run the publish turn for an approved post that is due; resolves when the turn is over. */
+  private publishPost(post: { id: string; platform: 'x' | 'linkedin'; text: string; mediaPaths?: string[] }): Promise<PublishOutcome> {
+    return new Promise((resolve) => {
+      this.publishWaiters.set(post.id, resolve);
+      this.fm.setAgent(SOCIAL_PUBLISHER_ID, { state: 'thinking', station: 'desk', activity: `publishing on ${post.platform === 'x' ? 'X' : 'LinkedIn'}` });
+      this.enqueue({
+        kind: 'publish',
+        agentId: SOCIAL_PUBLISHER_ID,
+        postId: post.id,
+        sessionKey: `${SOCIAL_PUBLISHER_ID}:social`,
+        prompt: publishPrompt(post as Parameters<typeof publishPrompt>[0], this.fm.social.dir),
+      });
+    });
+  }
+
+  // ---- Content Room: jobs and uploads ----------------------------------------------------------
+
+  /** A content agent is on shift and not paused (the studio only wakes those). */
+  private canRunDesk(agentId: string): boolean {
+    const a = this.fm.agent(agentId);
+    return !!a && this.fm.isContent(agentId) && a.active && !a.paused && !this.isStopped(agentId) && !this.authFailed && !this.stopping;
+  }
+
+  /** A job from the studio (new idea approved, comment, post-mortem, autopilot top-up). */
+  private wakeContent(agentId: string, prompt: string, sessionKey?: string, kind: 'content' | 'analytics' = 'content'): void {
+    this.fm.setAgent(agentId, { state: 'thinking', station: 'desk', activity: kind === 'analytics' ? 'reading YouTube Studio' : 'on a content job' });
+    this.enqueue({ kind, agentId, sessionKey: sessionKey ?? `${agentId}:content`, prompt });
+  }
+
+  /** Run Cleo's upload turn for a scheduled video that is due; resolves when the turn is over. */
+  private publishVideo(video: ContentVideo, channel: ContentChannel): Promise<PublishOutcome> {
+    return new Promise((resolve) => {
+      this.publishWaiters.set(video.id, resolve);
+      this.fm.setAgent(CONTENT_PUBLISHER_ID, { state: 'thinking', station: 'desk', activity: 'uploading to YouTube' });
+      this.enqueue({
+        kind: 'publish',
+        agentId: CONTENT_PUBLISHER_ID,
+        videoId: video.id,
+        sessionKey: `${CONTENT_PUBLISHER_ID}:content`,
+        prompt: publishVideoPrompt(video, channel, this.fm.content.dir),
+      });
+    });
+  }
+
+  private settlePublish(postId: string, outcome: PublishOutcome): void {
+    const resolve = this.publishWaiters.get(postId);
+    this.publishWaiters.delete(postId);
+    resolve?.(outcome);
   }
 
   onDecisionSettled(d: Decision): void {
@@ -1186,7 +1338,7 @@ export class TeamBackend implements Backend {
       this.fm.setAgent(agentId, { state: 'idle', activity: 'paused' });
     } else if (action === 'resume' || action === 'spawn') {
       const wasStopped = this.isStopped(agentId);
-      if (action === 'spawn' && agentId !== LEAD && !this.cfg.workers.includes(agentId)) this.cfg.workers.push(agentId);
+      if (action === 'spawn' && agentId !== LEAD && !this.fm.isDesk(agentId) && !this.cfg.workers.includes(agentId)) this.cfg.workers.push(agentId);
       if (wasStopped || action === 'spawn') {
         this.setStopped(agentId, false);
         this.fm.setAgent(agentId, { active: true, paused: false, state: 'idle', station: 'lounge', activity: 'ready' });
@@ -1202,6 +1354,9 @@ export class TeamBackend implements Backend {
     } else if (action === 'stop') {
       this.setStopped(agentId, true);
       if (r) this.abortTurn(r, 'stop');
+      for (const j of [...(this.queues.get(agentId) ?? []), ...(this.pausedJobs.has(agentId) ? [this.pausedJobs.get(agentId)!] : [])]) {
+        if (j.postId ?? j.videoId) this.settlePublish((j.postId ?? j.videoId)!, { ok: false, error: `${name} was stopped before publishing — check the platform before re-approving` });
+      }
       this.queues.delete(agentId);
       this.pausedJobs.delete(agentId);
       delete this.st.inflight[agentId];

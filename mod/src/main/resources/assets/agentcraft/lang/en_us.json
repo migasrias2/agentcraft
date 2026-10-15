@@ -33,7 +33,22 @@
   "item.agentcraft.glow_strip": "Glow Strip",
   "itemGroup.agentcraft": "AgentCraft Studio",
   "key.category.agentcraft.agentcraft": "AgentCraft",
+  "key.category.agentcraft.blackjack": "AgentCraft Blackjack",
+  "key.agentcraft.blackjack_deal": "Blackjack: deal / next hand",
+  "key.agentcraft.blackjack_hit": "Blackjack: hit",
+  "key.agentcraft.blackjack_stand": "Blackjack: stand",
+  "key.agentcraft.blackjack_double": "Blackjack: double down",
+  "key.agentcraft.blackjack_split": "Blackjack: split",
+  "key.agentcraft.blackjack_bet_up": "Blackjack: raise bet (Shift: 50)",
+  "key.agentcraft.blackjack_bet_down": "Blackjack: lower bet (Shift: 50)",
+  "key.agentcraft.blackjack_clear": "Blackjack: clear bet",
+  "key.agentcraft.blackjack_rebuy": "Blackjack: rebuy chips",
+  "key.agentcraft.blackjack_big_view": "Blackjack: big view",
+  "key.agentcraft.blackjack_leave": "Blackjack: leave the seat",
   "key.agentcraft.console": "Open the console",
   "key.agentcraft.console_terminal": "Console (looking at a terminal)",
-  "key.agentcraft.decisions": "Answer decisions"
+  "key.agentcraft.decisions": "Answer decisions",
+  "agentcraft.content.studio": "Content Studio",
+  "agentcraft.content.room": "Content Room",
+  "agentcraft.content.not_connected": "Analytics not connected: run `npm run youtube:connect` in foreman/"
 }

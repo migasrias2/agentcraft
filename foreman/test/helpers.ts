@@ -4,7 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig, PROJECT_ROOT, type Config } from '../src/config.js';
 import { silentLogger } from '../src/context.js';
-import { Foreman } from '../src/foreman.js';
+import { Foreman, type ForemanOptions } from '../src/foreman.js';
 import { Notifier } from '../src/notifier.js';
 import type { Outbound } from '../src/protocol.js';
 
@@ -47,7 +47,7 @@ export interface Harness {
   toasts: Array<{ title: string; body: string }>;
 }
 
-export function makeForeman(home: string, args: string[] = []): Harness {
+export function makeForeman(home: string, args: string[] = [], extra: Partial<ForemanOptions> = {}): Harness {
   const cfg = testConfig(home, args);
   const toasts: Array<{ title: string; body: string }> = [];
   const notifier = new Notifier({
@@ -59,7 +59,7 @@ export function makeForeman(home: string, args: string[] = []): Harness {
       return true;
     },
   });
-  const fm = new Foreman({ config: cfg, logger: silentLogger, notifier });
+  const fm = new Foreman({ config: cfg, logger: silentLogger, notifier, ...extra });
   const events: Outbound[] = [];
   fm.subscribe((m) => events.push(m));
   return { fm, cfg, home, events, notifier, toasts };

@@ -136,7 +136,7 @@ function build(): string {
   out.push('- One JSON object per WebSocket **text** frame. Envelope: `{ "v": 1, "type": "<type>", "id"?: "<correlation id>", ...payload }`.');
   out.push('- Client messages that carry an `id` are answered with `ack { re: id, ok, error?, result? }`. Invalid messages get `error` (and a failed `ack` if they had an id).');
   out.push('- Timestamps are integer epoch milliseconds. Colors are `"#RRGGBB"`. Optional fields are omitted, never `null`. Receivers must ignore unknown fields.');
-  out.push('- Upserts replace the whole entity by id. `agent.log` and `feed.add` append.');
+  out.push('- Upserts replace the whole entity by id. `agent.log` and `feed.add` append; `agent.screen` replaces the current screen frame of that agent.');
   out.push('- Connections that carry any `Origin` header (browsers; also `Origin: null` from sandboxed iframes, `data:` and `file:` pages) or a Host header other than `127.0.0.1` / `localhost` / `[::1]` are rejected with HTTP 401, so a web page cannot drive your agents. Clients (the mod, CLI tools) must not send an Origin header. Heartbeat: the Foreman pings every 15 s.');
   out.push('- The mod should reconnect with backoff and re-send `hello`; the snapshot rebuilds the whole view.');
   out.push('');

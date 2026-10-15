@@ -5,16 +5,32 @@ import dev.agentcraft.AgentCraft;
 import dev.agentcraft.client.foreman.Protocol.Agent;
 import dev.agentcraft.client.foreman.Protocol.AgentLog;
 import dev.agentcraft.client.foreman.Protocol.AgentLogs;
+import dev.agentcraft.client.foreman.Protocol.AgentScreen;
 import dev.agentcraft.client.foreman.Protocol.AgentSay;
 import dev.agentcraft.client.foreman.Protocol.AgentUpsert;
 import dev.agentcraft.client.foreman.Protocol.Decision;
 import dev.agentcraft.client.foreman.Protocol.DecisionKind;
 import dev.agentcraft.client.foreman.Protocol.DecisionUpsert;
+import dev.agentcraft.client.foreman.Protocol.Doc;
+import dev.agentcraft.client.foreman.Protocol.DocUpsert;
 import dev.agentcraft.client.foreman.Protocol.FeedAdd;
 import dev.agentcraft.client.foreman.Protocol.FeedItem;
 import dev.agentcraft.client.foreman.Protocol.ForemanStatus;
 import dev.agentcraft.client.foreman.Protocol.ForemanStatusMsg;
 import dev.agentcraft.client.foreman.Protocol.Goal;
+import dev.agentcraft.client.foreman.Protocol.Media;
+import dev.agentcraft.client.foreman.Protocol.MediaAdd;
+import dev.agentcraft.client.foreman.Protocol.ContentChannel;
+import dev.agentcraft.client.foreman.Protocol.ContentChannelStats;
+import dev.agentcraft.client.foreman.Protocol.ContentChannelUpsert;
+import dev.agentcraft.client.foreman.Protocol.ContentRef;
+import dev.agentcraft.client.foreman.Protocol.ContentRefUpsert;
+import dev.agentcraft.client.foreman.Protocol.ContentStat;
+import dev.agentcraft.client.foreman.Protocol.ContentStatsMsg;
+import dev.agentcraft.client.foreman.Protocol.ContentVideo;
+import dev.agentcraft.client.foreman.Protocol.ContentVideoUpsert;
+import dev.agentcraft.client.foreman.Protocol.SocialPost;
+import dev.agentcraft.client.foreman.Protocol.SocialPostUpsert;
 import dev.agentcraft.client.foreman.Protocol.GoalUpsert;
 import dev.agentcraft.client.foreman.Protocol.LogEntry;
 import dev.agentcraft.client.foreman.Protocol.MemoryEntry;
@@ -58,6 +74,10 @@ public final class ForemanState {
 	public static final int LOG_TAIL = 200;
 	public static final int FEED_TAIL = 200;
 	public static final int NOTIFY_TAIL = 20;
+	/** Media items kept in the gallery. */
+	public static final int MEDIA_TAIL = 12;
+	/** Handed-over documents kept (the Foreman sends at most 30). */
+	public static final int DOC_MAX = 30;
 
 	private final Map<String, Agent> agents = new LinkedHashMap<>();
 	private final Map<String, Task> tasks = new LinkedHashMap<>();
@@ -67,6 +87,16 @@ public final class ForemanState {
 	private final Map<String, Goal> goals = new LinkedHashMap<>();
 	private final Map<String, Deque<LogEntry>> logs = new HashMap<>();
 	private final Map<String, AgentSay> lastSay = new HashMap<>();
+	private final Map<String, AgentScreen> screens = new HashMap<>();
+	private final Deque<Media> media = new ArrayDeque<>();
+	private final Map<String, Doc> docs = new LinkedHashMap<>();
+	private final Map<String, SocialPost> socialPosts = new LinkedHashMap<>();
+	private final Map<String, ContentChannel> contentChannels = new LinkedHashMap<>();
+	private final Map<String, ContentVideo> contentVideos = new LinkedHashMap<>();
+	private final Map<String, ContentRef> contentRefs = new LinkedHashMap<>();
+	/** Stat history per YouTube video id, oldest first. */
+	private final Map<String, List<ContentStat>> contentStats = new HashMap<>();
+	private final Map<String, ContentChannelStats> contentChannelStats = new HashMap<>();
 	private final Deque<FeedItem> feed = new ArrayDeque<>();
 	private final Deque<Notify> notifications = new ArrayDeque<>();
 	private @Nullable Goal goal;
@@ -180,6 +210,111 @@ public final class ForemanState {
 	public int logCount(String agentId) {
 		Deque<LogEntry> d = logs.get(agentId);
 		return d == null ? 0 : d.size();
+	}
+
+	/** Latest live screen frame per agent (base64 image, in memory only), unmodifiable. */
+	public Map<String, AgentScreen> screens() {
+		return Collections.unmodifiableMap(screens);
+	}
+
+	/** Gallery of media agents handed the user, newest last, metadata only (frames live in the client's MediaStore). */
+	public List<Media> media() {
+		return List.copyOf(media);
+	}
+
+	/** Handed-over documents, oldest first (a copy). */
+	public List<Doc> docs() {
+		List<Doc> out = new ArrayList<>(docs.values());
+		out.sort(Comparator.comparingLong(Doc::at));
+		return out;
+	}
+
+	/** The Social Desk calendar: every post, scheduled time first (posts without a time last), then creation order (a copy). */
+	public List<SocialPost> socialPosts() {
+		List<SocialPost> out = new ArrayList<>(socialPosts.values());
+		out.sort(Comparator.comparingLong((SocialPost p) -> p.scheduledAt() == null ? Long.MAX_VALUE : p.scheduledAt()).thenComparingLong(SocialPost::createdAt));
+		return out;
+	}
+
+	public @Nullable SocialPost socialPost(String id) {
+		return socialPosts.get(id);
+	}
+
+	/** Content Room channels in creation order (a copy). */
+	public List<ContentChannel> contentChannels() {
+		return List.copyOf(contentChannels.values());
+	}
+
+	public @Nullable ContentChannel contentChannel(String id) {
+		return contentChannels.get(id);
+	}
+
+	/** Videos of a channel (null = all), newest first (a copy). */
+	public List<ContentVideo> contentVideos(@Nullable String channelId) {
+		List<ContentVideo> out = new ArrayList<>();
+		for (ContentVideo v : contentVideos.values()) {
+			if (channelId == null || channelId.equals(v.channelId())) {
+				out.add(v);
+			}
+		}
+		out.sort(Comparator.comparingLong(ContentVideo::createdAt).reversed());
+		return out;
+	}
+
+	public @Nullable ContentVideo contentVideo(String id) {
+		return contentVideos.get(id);
+	}
+
+	/** Studied references, newest first (a copy). */
+	public List<ContentRef> contentRefs() {
+		List<ContentRef> out = new ArrayList<>(contentRefs.values());
+		out.sort(Comparator.comparingLong(ContentRef::at).reversed());
+		return out;
+	}
+
+	/** Stat history of one YouTube video id, oldest first (empty when unknown). */
+	public List<ContentStat> contentStatHistory(String youtubeVideoId) {
+		return contentStats.getOrDefault(youtubeVideoId, List.of());
+	}
+
+	public @Nullable ContentStat contentStat(String youtubeVideoId) {
+		List<ContentStat> h = contentStats.get(youtubeVideoId);
+		return h == null || h.isEmpty() ? null : h.get(h.size() - 1);
+	}
+
+	public @Nullable ContentChannelStats contentChannelStats(String channelId) {
+		return contentChannelStats.get(channelId);
+	}
+
+	/** Optimistic local "read" (the Foreman's doc.upsert confirms it). Client thread. */
+	public void markDocRead(String id) {
+		Doc prev = docs.get(id);
+		if (prev != null && !prev.read()) {
+			Doc now = prev.withRead(true);
+			docs.put(id, now);
+			fire(l -> l.onDoc(prev, now));
+		}
+	}
+
+	public @Nullable Doc doc(String id) {
+		return docs.get(id);
+	}
+
+	/** Newest unread document of this agent, or null. */
+	public @Nullable Doc unreadDoc(String agentId) {
+		Doc best = null;
+		for (Doc d : docs.values()) {
+			if (!d.read() && d.agentId().equals(agentId) && (best == null || d.at() >= best.at())) {
+				best = d;
+			}
+		}
+		return best;
+	}
+
+	/** True while the Foreman runs agent tool calls without asking (ForemanStatus.autoApprove). */
+	public boolean autoApprove() {
+		ForemanStatus st = status;
+		return st != null && Boolean.TRUE.equals(st.autoApprove());
 	}
 
 	/** The last thing this agent said (speech bubble source), or null. */
@@ -383,6 +518,65 @@ public final class ForemanState {
 					fire(l -> l.onLog(m.agentId(), m.entries()));
 				}
 			}
+			case "agent.screen" -> {
+				AgentScreen sc = ForemanJson.read(json, AgentScreen.class);
+				if (sc.agentId() != null && !sc.data().isEmpty()) {
+					screens.put(sc.agentId(), sc);
+					fire(l -> l.onScreen(sc));
+				}
+			}
+			case "media.add" -> {
+				Media m = ForemanJson.read(json, MediaAdd.class).item();
+				if (m != null && m.id() != null) {
+					bounded(media, m.withoutFrames(), MEDIA_TAIL);
+					fire(l -> l.onMedia(m));
+				}
+			}
+			case "doc.upsert" -> {
+				Doc d = ForemanJson.read(json, DocUpsert.class).doc();
+				if (d != null && d.id() != null && d.agentId() != null) {
+					Doc prev = docs.remove(d.id());
+					docs.put(d.id(), prev != null && prev.read() ? d.withRead(true) : d);
+					while (docs.size() > DOC_MAX) {
+						docs.remove(docs.keySet().iterator().next());
+					}
+					Doc now = docs.get(d.id());
+					fire(l -> l.onDoc(prev, now));
+				}
+			}
+			case "social.post.upsert" -> {
+				SocialPost p = ForemanJson.read(json, SocialPostUpsert.class).post();
+				if (p != null && p.id() != null) {
+					SocialPost prev = socialPosts.put(p.id(), p);
+					fire(l -> l.onSocialPost(prev, p));
+				}
+			}
+			case "content.channel.upsert" -> {
+				ContentChannel c = ForemanJson.read(json, ContentChannelUpsert.class).channel();
+				if (c != null && c.id() != null) {
+					ContentChannel prev = contentChannels.put(c.id(), c);
+					fire(l -> l.onContentChannel(prev, c));
+				}
+			}
+			case "content.video.upsert" -> {
+				ContentVideo v = ForemanJson.read(json, ContentVideoUpsert.class).video();
+				if (v != null && v.id() != null) {
+					ContentVideo prev = contentVideos.put(v.id(), v);
+					fire(l -> l.onContentVideo(prev, v));
+				}
+			}
+			case "content.ref.upsert" -> {
+				ContentRef r = ForemanJson.read(json, ContentRefUpsert.class).ref();
+				if (r != null && r.id() != null) {
+					ContentRef prev = contentRefs.put(r.id(), r);
+					fire(l -> l.onContentRef(prev, r));
+				}
+			}
+			case "content.stats" -> {
+				ContentStatsMsg m = ForemanJson.read(json, ContentStatsMsg.class);
+				mergeContentStats(m.stats(), m.channelStats());
+				fire(ForemanListener::onContentStats);
+			}
 			case "agent.say" -> {
 				AgentSay s = ForemanJson.read(json, AgentSay.class);
 				if (s.agentId() != null) {
@@ -463,6 +657,15 @@ public final class ForemanState {
 		memory.clear();
 		goals.clear();
 		logs.clear();
+		screens.clear();
+		media.clear();
+		docs.clear();
+		socialPosts.clear();
+		contentChannels.clear();
+		contentVideos.clear();
+		contentRefs.clear();
+		contentStats.clear();
+		contentChannelStats.clear();
 		feed.clear();
 		for (Agent a : s.agents()) {
 			if (a != null && a.id() != null) {
@@ -508,12 +711,69 @@ public final class ForemanState {
 				appendLogs(l.agentId(), l.entries());
 			}
 		}
+		for (AgentScreen sc : s.screens()) {
+			if (sc != null && sc.agentId() != null && !sc.data().isEmpty()) {
+				screens.put(sc.agentId(), sc);
+			}
+		}
+		for (Media m : s.media()) {
+			if (m != null && m.id() != null) {
+				bounded(media, m.withoutFrames(), MEDIA_TAIL);
+			}
+		}
+		for (Doc d : s.docs()) {
+			if (d != null && d.id() != null && d.agentId() != null) {
+				docs.put(d.id(), d);
+			}
+		}
+		for (SocialPost p : s.socialPosts()) {
+			if (p != null && p.id() != null) {
+				socialPosts.put(p.id(), p);
+			}
+		}
+		for (ContentChannel c : s.contentChannels()) {
+			if (c != null && c.id() != null) {
+				contentChannels.put(c.id(), c);
+			}
+		}
+		for (ContentVideo v : s.contentVideos()) {
+			if (v != null && v.id() != null) {
+				contentVideos.put(v.id(), v);
+			}
+		}
+		for (ContentRef r : s.contentRefs()) {
+			if (r != null && r.id() != null) {
+				contentRefs.put(r.id(), r);
+			}
+		}
+		mergeContentStats(s.contentStats(), s.contentChannelStats());
+		List<Media> mediaWithFrames = s.media();
+		fire(l -> l.onMediaSnapshot(mediaWithFrames));
 		// speech bubbles are transient: drop the ones of agents that no longer exist
 		lastSay.keySet().retainAll(agents.keySet());
 		status = s.foreman();
 		snapshots++;
 		snapshotAt = System.currentTimeMillis();
 		fire(l -> l.onSnapshot(this));
+	}
+
+	/** Regroup stats by video id (history oldest first); videos named in {@code stats} get their history replaced, the others keep theirs. */
+	private void mergeContentStats(List<ContentStat> stats, List<ContentChannelStats> channelStats) {
+		Map<String, List<ContentStat>> byVideo = new HashMap<>();
+		for (ContentStat st : stats) {
+			if (st != null && st.videoId() != null) {
+				byVideo.computeIfAbsent(st.videoId(), k -> new ArrayList<>()).add(st);
+			}
+		}
+		for (var e : byVideo.entrySet()) {
+			e.getValue().sort(Comparator.comparingLong(ContentStat::at));
+			contentStats.put(e.getKey(), List.copyOf(e.getValue()));
+		}
+		for (ContentChannelStats cs : channelStats) {
+			if (cs != null && cs.channelId() != null) {
+				contentChannelStats.put(cs.channelId(), cs);
+			}
+		}
 	}
 
 	private void appendLogs(String agentId, List<LogEntry> entries) {

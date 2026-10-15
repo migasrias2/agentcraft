@@ -27,6 +27,9 @@ public final class StationAssigner {
 
 	/** The station key an agent should be at: "desk", a shared station name, or "lounge". */
 	public static String stationKey(Agent a) {
+		if ((a.isSocial() || a.isContent()) && a.isActive()) {
+			return "desk"; // Nova and Sable (Social room), Iris, Reel, Vega and Cleo (Content room) live at their desks, whatever the Foreman says
+		}
 		if (!a.isActive()) {
 			return AnchorNames.LOUNGE;
 		}

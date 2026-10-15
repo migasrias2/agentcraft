@@ -203,6 +203,12 @@ function onMessage(m: ServerMessage): void {
       if (!prev || prev.state !== m.agent.state || prev.station !== m.agent.station || prev.activity !== m.agent.activity || prev.paused !== m.agent.paused) out(`${paint('magenta', '[agent]')} ${agentLine(m.agent)}`);
       break;
     }
+    case 'media.add':
+      out(`${paint('magenta', '[media]')} ${name(m.item.agentId)} ${m.item.kind} ${m.item.name}${m.item.caption ? ` - ${m.item.caption}` : ''} (${m.item.frames.length} frame${m.item.frames.length === 1 ? '' : 's'})`);
+      break;
+    case 'agent.screen':
+      if (!quietLogs) out(`  ${name(m.agentId).padEnd(8)}| ${paint('dim', `screen ${m.mime} ${Math.round(m.data.length / 1024)} KB from ${m.tool}`)}`);
+      break;
     case 'agent.log':
       if (quietLogs) break;
       for (const e of m.entries) {

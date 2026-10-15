@@ -119,6 +119,36 @@ final class DevCommands {
 			DevCommands::screen);
 		DevBridge.register("dev.key", 10_000, "{key:'escape'|'key.keyboard.f3', modifiers?} or {mapping:'key.chat'} - press a key (to the open screen, else key mappings)",
 			DevCommands::key);
+		DevBridge.register("dev.click", 10_000,
+			"{x, y, button?:1 (1 left, 3 right)} - a real mouse click at GUI coords: moves the cursor and goes through MouseHandler.onButton (press + release) -> {screen, xpos, ypos}",
+			(req, mc) -> {
+				Fields f = Fields.of(req);
+				double gx = f.integer("x", 0, 100_000);
+				double gy = f.integer("y", 0, 100_000);
+				int button = f.optInt("button", 1, 1, 3); // SDL numbering: 1 left, 2 middle, 3 right
+				return DevBridge.onClient(mc, () -> {
+					var w = mc.getWindow();
+					double sx = gx * w.getScreenWidth() / (double) w.getGuiScaledWidth();
+					double sy = gy * w.getScreenHeight() / (double) w.getGuiScaledHeight();
+					try {
+						for (String name : new String[] {"xpos", "ypos"}) {
+							java.lang.reflect.Field fld = net.minecraft.client.MouseHandler.class.getDeclaredField(name);
+							fld.setAccessible(true);
+							fld.setDouble(mc.mouseHandler, name.equals("xpos") ? sx : sy);
+						}
+					} catch (ReflectiveOperationException e) {
+						throw new DevException("cannot move the cursor: " + e);
+					}
+					var info = new net.minecraft.client.input.MouseButtonInfo(button, 0);
+					mc.mouseHandler.onButton(w.handle(), info, 1);
+					mc.mouseHandler.onButton(w.handle(), info, 0);
+					JsonObject o = new JsonObject();
+					o.addProperty("screen", mc.gui.screen() == null ? null : mc.gui.screen().getClass().getSimpleName());
+					o.addProperty("xpos", sx);
+					o.addProperty("ypos", sy);
+					return o;
+				});
+			});
 		DevBridge.register("dev.type", 10_000, "{text} - type text into the focused widget of the open screen", DevCommands::type);
 		DevBridge.register("dev.hud", 10_000, "{hidden: bool} - hide/show the HUD (like F1)", (req, mc) -> {
 			boolean hidden = Fields.of(req).bool("hidden");

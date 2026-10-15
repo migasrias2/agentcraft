@@ -2,16 +2,23 @@ package dev.agentcraft.client.console;
 
 import dev.agentcraft.client.console.ConsoleCommands.AgentAction;
 import dev.agentcraft.client.console.ConsoleCommands.Answer;
+import dev.agentcraft.client.console.ConsoleCommands.ApprovePost;
+import dev.agentcraft.client.console.ConsoleCommands.Auto;
+import dev.agentcraft.client.console.ConsoleCommands.Calendar;
+import dev.agentcraft.client.console.ConsoleCommands.Content;
 import dev.agentcraft.client.console.ConsoleCommands.Clear;
 import dev.agentcraft.client.console.ConsoleCommands.Command;
 import dev.agentcraft.client.console.ConsoleCommands.Decide;
+import dev.agentcraft.client.console.ConsoleCommands.Docs;
 import dev.agentcraft.client.console.ConsoleCommands.Empty;
 import dev.agentcraft.client.console.ConsoleCommands.Goal;
 import dev.agentcraft.client.console.ConsoleCommands.Help;
 import dev.agentcraft.client.console.ConsoleCommands.Intent;
 import dev.agentcraft.client.console.ConsoleCommands.Invalid;
 import dev.agentcraft.client.console.ConsoleCommands.Message;
+import dev.agentcraft.client.console.ConsoleCommands.Posts;
 import dev.agentcraft.client.console.ConsoleCommands.RepoAdd;
+import dev.agentcraft.client.console.ConsoleCommands.RepoNew;
 import dev.agentcraft.client.console.ConsoleCommands.Repos;
 import dev.agentcraft.client.console.ConsoleCommands.ShowDiff;
 import dev.agentcraft.client.console.ConsoleCommands.Sound;
@@ -31,6 +38,7 @@ import dev.agentcraft.client.foreman.Protocol.Task;
 import dev.agentcraft.client.foreman.Protocol.TaskStatus;
 import dev.agentcraft.client.hud.HudSounds;
 import dev.agentcraft.client.hud.UiBits;
+import dev.agentcraft.client.social.SocialCalendar;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,6 +46,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.function.Consumer;
+import dev.agentcraft.client.foreman.Protocol;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -141,6 +150,29 @@ public final class ConsoleActions {
 				clearFeedback();
 				return After.CLEAR;
 			}
+			case Docs d -> {
+				ConsoleLog.remember(raw);
+				clearFeedback();
+				return docs(s, d.ref());
+			}
+			case Posts po -> {
+				ConsoleLog.remember(raw);
+				posts(s);
+				clearFeedback();
+				return After.CLEAR;
+			}
+			case Calendar ca -> {
+				ConsoleLog.remember(raw);
+				clearFeedback();
+				net.minecraft.client.Minecraft.getInstance().gui.setScreen(new dev.agentcraft.client.social.SocialCalendarScreen());
+				return After.CLOSE;
+			}
+			case Content co -> {
+				ConsoleLog.remember(raw);
+				clearFeedback();
+				dev.agentcraft.client.content.ContentFeature.open();
+				return After.CLOSE;
+			}
 			case Decide d -> {
 				ConsoleLog.remember(raw);
 				clearFeedback();
@@ -199,6 +231,20 @@ public final class ConsoleActions {
 				String rid = ack.result() != null && ack.result().has("repoId") ? ack.result().get("repoId").getAsString() : null;
 				return "repo " + (rid != null ? rid + " " : "") + "added " + UiBits.CHECK;
 			}, "adding the repo\u2026");
+			case RepoNew r -> track(Foreman.createRepo(r.name(), r.goal(), r.auto()), raw, restore, ack -> {
+				String rid = ack.result() != null && ack.result().has("repoId") ? ack.result().get("repoId").getAsString() : r.name();
+				return "repo " + rid + " created" + (r.goal() != null ? ", goal started" : "") + (r.auto() ? " · AUTO on" : "") + " " + UiBits.CHECK;
+			}, "creating the repo…");
+			case ApprovePost ap -> {
+				Protocol.SocialPost post = findPost(s, ap.ref());
+				if (post == null) {
+					setFeedback("no post '" + ap.ref() + "' (see /posts)", Tone.ERROR, false);
+					return After.KEEP;
+				}
+				track(Foreman.socialAction(post.id(), "approve", null, null), raw, restore, ack -> post.id() + " approved"
+					+ (post.scheduledAt() != null ? ": goes out " + SocialCalendar.dayTime(post.scheduledAt()) : "") + " " + UiBits.CHECK,
+					"approving " + post.id() + "\u2026");
+			}
 			case AgentAction a -> {
 				List<CompletableFuture<Ack>> all = new ArrayList<>();
 				for (String id : a.agentIds()) {
@@ -216,6 +262,12 @@ public final class ConsoleActions {
 				String who = a.agentIds().size() == 1 ? ConsoleCommands.displayName(a.agentIds().get(0), s) : a.agentIds().size() + " agents";
 				track(combined, raw, restore, ack -> pastTense(a.action()) + " " + who + (a.arg() != null ? " on " + a.arg() : "") + " " + UiBits.CHECK,
 					a.action() + " " + who + "\u2026");
+			}
+			case Auto au -> {
+				boolean target = au.on() != null ? au.on() : !s.autoApprove();
+				track(Foreman.setAutoApprove(target), raw, restore, ack -> target
+					? "AUTO on: agents run tool calls without asking (denied things like git push stay denied) " + UiBits.CHECK
+					: "AUTO off: agents ask before risky tool calls " + UiBits.CHECK, (target ? "turning AUTO on" : "turning AUTO off") + "\u2026");
 			}
 			case TaskAction t -> track(Foreman.taskAction(t.taskId(), t.action(), t.arg()), raw, restore,
 				ack -> t.taskId() + " " + pastTense(t.action()) + (t.arg() != null ? " \u2192 " + t.arg() : "") + " " + UiBits.CHECK, t.action() + " "
@@ -280,7 +332,8 @@ public final class ConsoleActions {
 
 	private static void help(@Nullable String topic) {
 		ConsoleLog.add(Tone.HEADER, "Console");
-		ConsoleLog.add(Tone.HELP, "plain text\ta new goal for Marlow (several repos: you pick one)");
+		ConsoleLog.add(Tone.HELP, "plain text\ta new goal for Marlow (several repos: name one in the text, or pick from the list)");
+		ConsoleLog.add(Tone.HELP, "repo: goal\tsend straight to that repo (name or path, e.g. moonbase: or Desktop/side-project:)");
 		ConsoleLog.add(Tone.HELP, "@juniper text\tmessage an agent (Tab completes, @all = everyone)");
 		for (Command c : ConsoleCommands.COMMANDS) {
 			if (topic == null || c.name().startsWith(topic)) {
@@ -289,6 +342,76 @@ public final class ConsoleActions {
 		}
 		ConsoleLog.add(Tone.INFO, "Enter send \u00b7 Shift+Enter new line \u00b7 \u2191\u2193 history \u00b7 Tab complete \u00b7 "
 			+ dev.agentcraft.client.hud.Keys.label(dev.agentcraft.client.hud.Keys.decisions) + " decisions \u00b7 Esc close (your draft is kept)");
+	}
+
+	/** {@code /docs}: list handed-over documents (newest first, unread marked); {@code /docs n|id}: open one. */
+	private static After docs(@Nullable ForemanState s, @Nullable String ref) {
+		java.util.List<Protocol.Doc> all = new java.util.ArrayList<>(s == null ? java.util.List.of() : s.docs());
+		java.util.Collections.reverse(all);
+		if (ref == null) {
+			if (all.isEmpty()) {
+				ConsoleLog.add(Tone.INFO, "No documents handed over yet.");
+				return After.CLEAR;
+			}
+			ConsoleLog.add(Tone.HEADER, "Documents handed to you");
+			for (int i = 0; i < all.size(); i++) {
+				Protocol.Doc d = all.get(i);
+				String who = s.agent(d.agentId()) == null ? d.agentId() : s.agent(d.agentId()).name();
+				ConsoleLog.add(Tone.INFO, (i + 1) + ". " + (d.read() ? "  " : "* ") + d.title() + " (" + who + (d.name().isEmpty() ? "" : ", " + d.name())
+					+ ")  " + d.id());
+			}
+			ConsoleLog.add(Tone.INFO, "* = unread. Open one with /docs <number>.");
+			return After.CLEAR;
+		}
+		Protocol.Doc pick = null;
+		if (ref.matches("\\d{1,3}")) {
+			int n = Integer.parseInt(ref);
+			pick = n >= 1 && n <= all.size() ? all.get(n - 1) : null;
+		} else {
+			for (Protocol.Doc d : all) {
+				if (d.id().equalsIgnoreCase(ref)) {
+					pick = d;
+				}
+			}
+		}
+		if (pick == null || !dev.agentcraft.client.library.DocScreen.open(pick.id())) {
+			setFeedback("no document '" + ref + "' (see /docs)", Tone.ERROR, false);
+			return After.KEEP;
+		}
+		return After.CLOSE;
+	}
+
+	/** A Social Desk post by id ("p3") or by its number in {@code /posts}; null when unknown. */
+	private static Protocol.@Nullable SocialPost findPost(@Nullable ForemanState s, String ref) {
+		if (s == null) {
+			return null;
+		}
+		List<Protocol.SocialPost> open = SocialCalendar.upcoming(s.socialPosts());
+		if (ref.matches("\\d{1,3}")) {
+			int n = Integer.parseInt(ref);
+			if (n >= 1 && n <= open.size() && s.socialPost(ref) == null) {
+				return open.get(n - 1);
+			}
+		}
+		return s.socialPost(ref) != null ? s.socialPost(ref) : s.socialPost(ref.toLowerCase(java.util.Locale.ROOT));
+	}
+
+	/** {@code /posts}: open posts, soonest first: number, id, day and time, platform, status, first words. */
+	private static void posts(@Nullable ForemanState s) {
+		List<Protocol.SocialPost> open = s == null ? List.of() : SocialCalendar.upcoming(s.socialPosts());
+		if (open.isEmpty()) {
+			ConsoleLog.add(Tone.INFO, "No posts on the calendar. Ask Nova: @nova plan my week.");
+			return;
+		}
+		ConsoleLog.add(Tone.HEADER, "Social Desk \u00b7 " + SocialCalendar.countsLine(s.socialPosts(), null));
+		for (int i = 0; i < open.size(); i++) {
+			Protocol.SocialPost p = open.get(i);
+			String when = p.scheduledAt() == null ? "no time yet" : SocialCalendar.dayTime(p.scheduledAt());
+			Tone tone = p.status().equals("failed") ? Tone.ERROR : p.status().equals("approved") ? Tone.OK : Tone.INFO;
+			ConsoleLog.add(tone, (i + 1) + ". " + p.id() + "  " + when + "  " + SocialCalendar.platformName(p.platform()) + "  "
+				+ SocialCalendar.statusLabel(p.status()) + "  " + SocialCalendar.firstWords(p.text(), 60));
+		}
+		ConsoleLog.add(Tone.INFO, "/approve <id|number> approves one (it goes out at its time) \u00b7 /calendar opens the calendar.");
 	}
 
 	private static void status(ForemanState s) {
@@ -300,6 +423,8 @@ public final class ConsoleActions {
 		if (s.isStale()) {
 			ConsoleLog.add(Tone.ERROR, "Foreman offline: this is the last known state");
 		}
+		ConsoleLog.add(Tone.INFO, s.autoApprove() ? "AUTO is on: agents run tool calls without asking (/auto off to stop)"
+			: "AUTO is off: agents ask before risky tool calls (/auto to skip the questions)");
 		var g = s.goal();
 		if (g != null) {
 			ConsoleLog.add(Tone.INFO, "goal " + g.id() + " (" + g.status().wire() + ", " + Math.round(g.progress() * 100) + "%): "

@@ -51,6 +51,11 @@ public final class AgentView {
 	public @Nullable String awaitingDecision;
 	/** How many open decisions this agent owns (the card shows the first, "+n more"). */
 	public int awaitingCount;
+	/** An unread handed-over document of this agent ({@link DocHandover}): its id and title, or null. */
+	public @Nullable String docId;
+	public @Nullable String docTitle;
+	/** The hand-over is fresh: the agent comes to you and holds the book out. */
+	public boolean docOffering;
 	public String role = "";
 	public @Nullable String title;
 	/** Which engine runs this agent ("claude", "codex"; null: the sim) and its model for display ("Opus 5.5"). */
@@ -108,6 +113,9 @@ public final class AgentView {
 		if (!active) {
 			return "off shift";
 		}
+		if (docId != null) {
+			return "Right-click to read";
+		}
 		if (paused) {
 			return activity.isEmpty() ? "paused" : "paused · " + activity;
 		}
@@ -153,6 +161,6 @@ public final class AgentView {
 	 * Never while off shift or while the Foreman is offline.
 	 */
 	public boolean needsYou() {
-		return active && !stale && (awaitingUser || state == AgentState.WAITING_USER);
+		return active && !stale && (awaitingUser || docId != null || state == AgentState.WAITING_USER);
 	}
 }

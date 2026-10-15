@@ -13,6 +13,7 @@
     "tui": "node --import tsx scripts/fake-mod.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "youtube:connect": "node --import tsx scripts/youtube-connect.ts",
     "gen:protocol-doc": "node --import tsx scripts/gen-protocol-doc.ts",
     "check:protocol-doc": "node --import tsx scripts/gen-protocol-doc.ts --check",
     "check": "tsc --noEmit && vitest run && node --import tsx scripts/gen-protocol-doc.ts --check"

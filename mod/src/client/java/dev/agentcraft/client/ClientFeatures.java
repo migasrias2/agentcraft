@@ -2,10 +2,13 @@ package dev.agentcraft.client;
 
 import dev.agentcraft.AgentCraft;
 import dev.agentcraft.client.agents.AgentsFeature;
+import dev.agentcraft.client.casino.CasinoFeature;
 import dev.agentcraft.client.console.ConsoleFeature;
+import dev.agentcraft.client.content.ContentFeature;
 import dev.agentcraft.client.decisions.DecisionsFeature;
 import dev.agentcraft.client.diff.DiffFeature;
 import dev.agentcraft.client.foreman.ForemanFeature;
+import dev.agentcraft.client.gallery.GalleryFeature;
 import dev.agentcraft.client.hq.HqClientFeature;
 import dev.agentcraft.client.hud.HudFeature;
 import dev.agentcraft.client.library.LibraryFeature;
@@ -40,6 +43,9 @@ public final class ClientFeatures {
 		DiffFeature.init();
 		LibraryFeature.init();
 		PermissionsFeature.init();
+		CasinoFeature.init();    // blackjack in the Casino Lounge (client-only, for fun)
+		GalleryFeature.init();   // framed paintings from real images in the Gallery room
+		ContentFeature.init();   // the Content Room's lectern, studio screen and toasts
 		AgentCraft.LOGGER.info("AgentCraft client features initialised");
 	}
 }

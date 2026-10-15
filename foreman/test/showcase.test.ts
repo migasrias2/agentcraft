@@ -19,7 +19,8 @@ async function hold(home: string, repo: string, variant: string[]) {
   return { h, sim };
 }
 
-const states = (agents: Agent[]) => Object.fromEntries(agents.map((a) => [a.id, `${a.state}@${a.station}`]));
+// the desk agents (teams 'social' and 'content') sit outside the sim's coding scenario
+const states = (agents: Agent[]) => Object.fromEntries(agents.filter((a) => !a.team || a.team === 'studio').map((a) => [a.id, `${a.state}@${a.station}`]));
 
 describe('sim showcase states', () => {
   it('--showcase holds the busy mid-run state with open decisions', async () => {

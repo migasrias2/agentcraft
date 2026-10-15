@@ -3,6 +3,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { Foreman } from '../../foreman.js';
 import { firstLine, headLines, tailLines, truncate } from '../../util/text.js';
 import { relPath, toolActivity } from '../activity.js';
+import { extractImages } from './images.js';
 
 import type { TurnStats } from '../engine.js';
 export type { TurnStats };
@@ -129,7 +130,8 @@ export class StreamMapper {
             fm.agentLog(id, 'tool', act.label);
             const diff = diffFromInput(b.name, input, this.cwd);
             if (diff) fm.agentLog(id, 'diff', diff);
-            fm.setAgent(id, { state: act.state, station: act.station, activity: act.activity });
+            // the Social Desk agents stay at their desk (Chrome and the calendar are their whole job)
+            fm.setAgent(id, { state: act.state, station: fm.isDesk(id) && act.station !== 'user' ? 'desk' : act.station, activity: act.activity });
             if ((act.state === 'editing' || act.state === 'running' || act.state === 'testing') && this.role === 'worker') {
               const repoId = fm.agent(id)?.repoId;
               if (repoId) fm.repos.scheduleRefresh(repoId, 1500);
@@ -150,6 +152,10 @@ export class StreamMapper {
             fm.agentLog(id, 'result', headLines(text, 3, 300) || 'ok');
           } else {
             fm.agentLog(id, b.is_error ? 'error' : 'result', b.is_error ? truncate(text || 'tool error', 600) : summarizeResult(tool, text));
+          }
+          if (!b.is_error) {
+            const img = extractImages(b.content).at(-1); // newest screenshot of this result
+            if (img) fm.agentScreen(id, { mime: img.mime, data: img.data, tool, at: Date.now() });
           }
         }
         break;

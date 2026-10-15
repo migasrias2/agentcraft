@@ -95,6 +95,12 @@ export interface Config {
   autostart: boolean;
   reset: boolean;
   notify: boolean;
+  /** where `/repo new <name>` creates repositories (default: your home folder) */
+  newRepoDir: string;
+  /** your notes vault (e.g. Obsidian) every agent can search, read and drop Inbox lines into; absent = off */
+  brainDir?: string;
+  /** start with agents running tool calls without asking (the in-game `/auto` toggle; remembered per profile) */
+  autoApprove: boolean;
   toastSilent: boolean;
   debug: boolean;
   quiet: boolean;
@@ -214,7 +220,7 @@ export const KNOWN_FLAGS = new Set([
   'lead-model', 'worker-model', 'effort', 'lead-effort', 'max-turns', 'max-turns-lead', 'max-turns-worker',
   'max-concurrent', 'ci', 'max-budget', 'resume', 'lead-review', 'speed', 'seed', 'showcase', 'auto-answer',
   'ambient', 'lead-read-commands', 'lead-engine', 'worker-engine', 'engines', 'codex-path', 'codex-model', 'codex-lead-model',
-  'codex-worker-model', 'codex-effort', 'codex-lead-effort', 'mcp-config', 'chrome',
+  'codex-worker-model', 'codex-effort', 'codex-lead-effort', 'mcp-config', 'chrome', 'auto-approve', 'new-repo-dir', 'brain',
 ]);
 
 function engineName(v: unknown, d: EngineName, what: string): EngineName {
@@ -247,6 +253,13 @@ function checkArgs(flags: Flags, positional: string[]): void {
     throw new Error(`unknown option${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `"--${k}"`).join(', ')} (see --help)`);
   }
   if (positional.length) throw new Error(`unexpected argument "${positional[0]}" (options start with --; see --help)`);
+}
+
+/** `--brain <dir>` (~ allowed); missing or "none" turns the brain off. */
+function brainDir(v: unknown): string | undefined {
+  const s = str(v);
+  if (!s || s === 'none') return undefined;
+  return path.resolve(s.replace(/^~(?=$|[\\/])/, os.homedir()));
 }
 
 export function loadConfig(argv: string[], env: NodeJS.ProcessEnv = process.env): Config {
@@ -293,6 +306,9 @@ export function loadConfig(argv: string[], env: NodeJS.ProcessEnv = process.env)
     autostart: bool(flags.autostart, false) || !!str(flags.goal),
     reset: bool(flags.reset, false),
     notify: bool(pick('notify', 'AGENTCRAFT_NOTIFY'), backend !== 'sim'),
+    autoApprove: bool(pick('auto-approve', 'AGENTCRAFT_AUTO_APPROVE'), false),
+    newRepoDir: path.resolve(String(pick('new-repo-dir', 'AGENTCRAFT_NEW_REPO_DIR') ?? os.homedir()).replace(/^~(?=$|[\\/])/, os.homedir())),
+    brainDir: brainDir(pick('brain', 'AGENTCRAFT_BRAIN')),
     toastSilent: bool(pick('toast-silent', 'AGENTCRAFT_TOAST_SILENT'), false),
     debug: bool(pick('debug', 'AGENTCRAFT_DEBUG'), false),
     quiet: bool(flags.quiet, false),
@@ -359,6 +375,12 @@ usage: npm run start -- [options]
   --profile <name>         state profile under home (default: backend name)
   --reset                  wipe this profile's state first (sim: also recreates the demo repo)
   --notify / --no-notify   desktop notification when a decision waits (default: on for claude, off for sim)
+  --new-repo-dir <dir>     where /repo new <name> (or "+ New repo" in the goal picker) creates repos
+  --brain <dir>            your notes vault (Obsidian): agents get search_brain, read_brain, brain_inbox
+                           (env AGENTCRAFT_BRAIN, config.json \"brain\"; \"none\" = off)
+                           (default: your home folder; env AGENTCRAFT_NEW_REPO_DIR)
+  --auto-approve           agents run tool calls without asking you (git push and other denied things stay
+                           denied). Toggle in game with /auto on|off; the last choice is remembered per profile
   --toast-silent           toasts without sound
   --repo-poll-ms <n>       how often repo checkouts are checked for head/dirty changes (default 10000)
   --merge-style merge|squash  approved merges: merge commit keeping the agents' commits (default),

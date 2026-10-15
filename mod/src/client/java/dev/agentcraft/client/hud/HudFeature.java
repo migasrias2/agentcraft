@@ -76,6 +76,7 @@ public final class HudFeature {
 		o.addProperty("pillBottom", ConnectionBanner.pillBottom);
 		// something the goal bar drew last frame intersected the connection pill (should never be true)
 		o.addProperty("goalBarPillClash", GoalBar.pillClash);
+		o.addProperty("autoApprove", dev.agentcraft.client.foreman.Foreman.state() != null && dev.agentcraft.client.foreman.Foreman.state().autoApprove());
 		o.addProperty("soundsEnabled", HudSounds.enabled());
 		o.addProperty("forcedMute", HudSounds.forcedMute());
 		o.addProperty("bells", HudSounds.bells());

@@ -2,6 +2,7 @@ package dev.agentcraft.client.monitor;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import dev.agentcraft.block.ModBlocks;
 import dev.agentcraft.block.entity.ModBlockEntities;
 import dev.agentcraft.block.entity.MonitorBlockEntity;
 import dev.agentcraft.client.dev.DevBridge;
@@ -13,10 +14,16 @@ import dev.agentcraft.client.foreman.Protocol.Agent;
 import dev.agentcraft.client.foreman.Protocol.FeedItem;
 import dev.agentcraft.client.foreman.Protocol.Goal;
 import dev.agentcraft.client.foreman.Protocol.LogEntry;
+import dev.agentcraft.client.content.ContentFeature;
+import dev.agentcraft.client.content.ContentState;
+import dev.agentcraft.client.social.SocialCalendar;
+import dev.agentcraft.client.social.SocialCalendarScreen;
 import dev.agentcraft.client.ui.Guard;
 import dev.agentcraft.layout.Anchor;
 import dev.agentcraft.layout.AnchorNames;
 import dev.agentcraft.layout.Anchors;
+import dev.agentcraft.client.world.StationInteractions;
+import net.minecraft.client.Minecraft;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -33,6 +40,15 @@ import org.jspecify.annotations.Nullable;
  * {@link MonitorRenderer}. Binding = agent id; an empty binding resolves to the agent whose
  * {@code monitor_<id>} anchor lies on the panel, otherwise the screen shows the team activity feed
  * (binding {@code feed} does that explicitly).
+ *
+ * <p>While an agent has a fresh live screen frame (a screenshot from a browser / Studio / Blender
+ * tool, see {@link ScreenFrames}) the monitor shows that image instead of the full log, with a
+ * "LIVE" label and a two-row log strip when the panel is tall enough; it falls back to the log
+ * when the frame goes stale. Right-click a monitor to open {@link MonitorViewScreen}, the big view.
+ * A monitor bound to {@code media} (the Screening Room's big screen) shows the media gallery instead
+ * ({@link MediaScreenDraw}, {@link MediaStore}); right-click opens {@link MediaViewScreen}. A monitor bound to {@code calendar}
+ * (the Social Room's wall calendar) draws the week's posts ({@link CalendarScreenDraw}); right-click opens the calendar screen.
+ * A monitor bound to {@code content} (the Content Room's analytics board) draws the channel's numbers ({@link ContentBoardDraw}); right-click opens the Content Studio.
  *
  * <p>Change tracking: a Foreman listener bumps a per-agent log / agent sequence number, and each
  * screen re-lays itself out only when the numbers it was built from change.
@@ -59,6 +75,35 @@ public final class MonitorFeature {
 
 	public static void init() {
 		BlockEntityRenderers.register(ModBlockEntities.MONITOR, ctx -> new MonitorRenderer());
+		ScreenFrames.init();
+		MediaStore.init();
+		StationInteractions.onUse(ModBlocks.MONITOR, (player, pos, state, be) -> {
+			if (mediaAt(pos)) {
+				Minecraft.getInstance().gui.setScreen(new MediaViewScreen(null));
+				return;
+			}
+			if (calendarAt(pos)) {
+				Minecraft.getInstance().gui.setScreen(new SocialCalendarScreen());
+				return;
+			}
+			if (boardAt(pos)) {
+				ContentFeature.open();
+				return;
+			}
+			String agent = agentAt(pos);
+			if (agent != null) {
+				Minecraft.getInstance().gui.setScreen(new MonitorViewScreen(agent));
+			}
+		});
+		DevBridge.registerScreen("monitor", mc -> {
+			String id = ScreenFrames.anyAgent();
+			if (id == null) {
+				throw new DevBridge.DevException("no live screen frame yet (send an agent.screen to the Foreman first)");
+			}
+			return new MonitorViewScreen(id);
+		});
+		DevBridge.registerScreen("media", mc -> new MediaViewScreen(null));
+		DevBridge.registerScreen("calendar", mc -> new SocialCalendarScreen());
 		Foreman.addListener(new ForemanListener() {
 			@Override
 			public void onSnapshot(ForemanState st) {
@@ -135,6 +180,53 @@ public final class MonitorFeature {
 				return o;
 			});
 		});
+	}
+
+	/** The agent shown by the monitor panel that contains {@code pos}, or null (unknown block, feed monitor). */
+	static @Nullable String agentAt(BlockPos pos) {
+		for (MonitorScreen m : SCREENS.values()) {
+			if (m.agentId.isEmpty() || "feed".equals(m.agentId) || MediaScreenDraw.BINDING.equals(m.agentId)
+				|| SocialCalendar.BINDING.equals(m.agentId) || ContentState.BINDING.equals(m.agentId) || m.panelW <= 0) {
+				continue;
+			}
+			if (onPanel(m.origin, m.facing.getCounterClockWise(), m.panelW, m.panelH, pos)) {
+				return m.agentId;
+			}
+		}
+		return null;
+	}
+
+	/** True when the monitor panel that contains {@code pos} is the Screening Room's media screen. */
+	static boolean mediaAt(BlockPos pos) {
+		for (MonitorScreen m : SCREENS.values()) {
+			if (MediaScreenDraw.BINDING.equals(m.agentId) && m.panelW > 0
+				&& onPanel(m.origin, m.facing.getCounterClockWise(), m.panelW, m.panelH, pos)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** True when the monitor panel that contains {@code pos} is the Social Room's wall calendar. */
+	static boolean calendarAt(BlockPos pos) {
+		for (MonitorScreen m : SCREENS.values()) {
+			if (SocialCalendar.BINDING.equals(m.agentId) && m.panelW > 0
+				&& onPanel(m.origin, m.facing.getCounterClockWise(), m.panelW, m.panelH, pos)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** True when the monitor panel that contains {@code pos} is the Content Room's wall analytics board. */
+	static boolean boardAt(BlockPos pos) {
+		for (MonitorScreen m : SCREENS.values()) {
+			if (ContentState.BINDING.equals(m.agentId) && m.panelW > 0
+				&& onPanel(m.origin, m.facing.getCounterClockWise(), m.panelW, m.panelH, pos)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	static MonitorScreen screen(BlockPos origin) {

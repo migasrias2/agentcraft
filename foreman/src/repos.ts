@@ -239,6 +239,32 @@ export class RepoManager {
     return repo;
   }
 
+  /**
+   * Make a brand-new repository and register it: `<parent>/<name>` (name may be home-relative,
+   * e.g. `Desktop/new-game`), `git init` on main, a README and a first commit (worktrees need one).
+   */
+  async create(name: string, parent: string = os.homedir()): Promise<Repo> {
+    const clean = name.trim().replace(/^~[\\/]/, '');
+    if (!clean || clean.length > 120 || !/^[A-Za-z0-9._ -]+(?:[\\/][A-Za-z0-9._ -]+)*$/.test(clean) || clean.split(/[\\/]/).some((part) => part === '.' || part === '..')) {
+      throw new RepoError(`bad repo name "${name}": use letters, numbers, - _ . (and / for a folder under your home, e.g. Desktop/my-game)`, 'refused');
+    }
+    const abs = path.isAbsolute(clean) ? clean : path.resolve(parent, clean);
+    if (fs.existsSync(abs) && fs.readdirSync(abs).length) throw new RepoError(`${abs} already exists and is not empty: use /repo add ${abs} to connect it`, 'conflict');
+    ensureDir(abs);
+    const base = path.basename(abs);
+    fs.writeFileSync(path.join(abs, 'README.md'), `# ${base}\n\nCreated in AgentCraft.\n`);
+    try {
+      await git(abs, ['init', '-b', 'main']);
+      await git(abs, ['add', 'README.md']);
+      const who = await userIdentity(abs);
+      await git(abs, ['commit', '-m', `chore: start ${base}`], { env: who.env });
+    } catch (e) {
+      fs.rmSync(path.join(abs, '.git'), { recursive: true, force: true });
+      throw new RepoError(`could not create the repository at ${abs}: ${(e as Error).message}`, 'failed');
+    }
+    return this.add(abs);
+  }
+
   private emitRepo(r: Repo): void {
     this.ctx.store.markDirty();
     this.ctx.emit({ type: 'repo.upsert', repo: { ...r, worktrees: r.worktrees.map((w) => ({ ...w })) } });

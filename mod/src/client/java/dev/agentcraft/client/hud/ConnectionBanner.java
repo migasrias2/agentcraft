@@ -85,6 +85,9 @@ public final class ConnectionBanner implements HudElement {
 			detail = "start it: cd foreman; npm run start";
 		}
 		drawPill(g, font, dot, title, detail, alpha, pulse, now);
+		if (link.synced() && st.autoApprove()) {
+			drawAutoPill(g, font, now);
+		}
 
 		if (link.synced() && fs != null && fs.auth() == AuthStatus.FAILED) {
 			drawAuthBanner(g, font, fs);
@@ -130,6 +133,27 @@ public final class ConnectionBanner implements HudElement {
 		if (detail != null) {
 			g.text(font, detail, tx, y + p.top() + 10, UiStyle.withAlpha(UiStyle.color("ink_ui.activity", 0xFFC4BDB2), alpha), false);
 		}
+	}
+
+	/**
+	 * "AUTO" chip left of the Foreman pill while agents run tool calls without asking: a clay pill with
+	 * a pulsing warning dot, so it is never forgotten (toggle with /auto in the console).
+	 */
+	private static void drawAutoPill(GuiGraphicsExtractor g, Font font, long now) {
+		Kit.Padding p = Kit.padding("tooltip");
+		String text = "AUTO";
+		int w = p.left() + 11 + 3 + font.width(text) + p.right();
+		int h = pillBottom - MARGIN;
+		int x = pillLeft - w - 4;
+		int y = MARGIN;
+		Panels.sprite(g, Kit.TOOLTIP, x, y, w, h);
+		int dx = x + p.left();
+		int dy = y + (h - 11) / 2;
+		float t = (float) Math.sin((now % 1200) / 1200.0 * Math.PI * 2) * 0.5f + 0.5f;
+		Panels.sprite(g, Kit.dot("waiting", true), dx, dy, 11, 11, ((int) (255 * (0.35f + 0.65f * t)) << 24) | 0xFFFFFF);
+		Panels.sprite(g, Kit.dot("waiting", false), dx + 2, dy + 2, 7, 7);
+		g.text(font, text, dx + 11 + 3, y + (h - 8) / 2, UiStyle.CREAM, false);
+		pillLeft = x;
 	}
 
 	private static void drawAuthBanner(GuiGraphicsExtractor g, Font font, ForemanStatus fs) {

@@ -32,7 +32,7 @@ public final class AgentLife {
 
 	/** What the body is doing (picked every tick). */
 	public enum Posture {
-		WALK, IDLE, SIT_IDLE, SIT_TYPE, SIT_THINK, SIT_SCRATCH, READ, TYPE_STAND, LEAN_BENCH, REVIEW, WAIT, THINK, SCRATCH, RELAX, STRETCH, TALK
+		WALK, IDLE, SIT_IDLE, SIT_TYPE, SIT_THINK, SIT_SCRATCH, READ, TYPE_STAND, LEAN_BENCH, REVIEW, WAIT, THINK, SCRATCH, RELAX, STRETCH, TALK, OFFER
 	}
 
 	/** Eye height of the agent model (player eye 1.62 x model scale 0.9375). */
@@ -330,6 +330,9 @@ public final class AgentLife {
 		if (paused) {
 			return Posture.IDLE;
 		}
+		if (v.docOffering) {
+			return Posture.OFFER;
+		}
 		boolean waitingUser = v.state == AgentState.WAITING_USER;
 		if (talking && (fam.equals("idle") || fam.equals("done") || waitingUser || v.station.equals(AnchorNames.MEETING))) {
 			return Posture.TALK;
@@ -377,6 +380,14 @@ public final class AgentLife {
 		switch (p) {
 			case WALK -> {
 				t[P_ARMW] = 0f;
+				t[P_LEAN] = 0.03f;
+				if (e.view().docOffering) {
+					t[P_BOOK] = 1f; // carries the book to you
+				}
+			}
+			case OFFER -> {
+				arms(t, -1.08f, -0.32f, 0f, -1.08f, 0.32f, 0f);
+				t[P_BOOK] = 1f;
 				t[P_LEAN] = 0.03f;
 			}
 			case IDLE -> {

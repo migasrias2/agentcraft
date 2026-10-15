@@ -321,6 +321,9 @@ public final class HqWorldDriver {
 			return s.setValue(MergeStationBlock.ACTIVE, w.mergeActive());
 		}
 		if (be instanceof MonitorBlockEntity mon && s.getBlock() instanceof MonitorBlock && !mon.binding().isEmpty()) {
+			if ("media".equals(mon.binding()) || "calendar".equals(mon.binding()) || "content".equals(mon.binding())) {
+				return s.setValue(MonitorBlock.LIT, true); // the Screening Room's media screen, the Social Room's wall calendar and the Content Room's board are always on
+			}
 			Boolean lit = w.monitorLit().get(mon.binding());
 			return s.setValue(MonitorBlock.LIT, lit != null && lit);
 		}

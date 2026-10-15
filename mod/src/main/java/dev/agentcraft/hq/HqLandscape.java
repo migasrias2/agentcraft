@@ -46,7 +46,7 @@ final class HqLandscape {
 
 	/** Areas kept level with the hall's plinth (x0, z0, x1, z1): building, front court, pond, garden, the path to the gate. */
 	private static final int[][] FLAT = {
-		{-29, -16, 29, 12}, {-20, 6, 20, 33}, {-37, 9, -10, 34}, {4, 29, 22, 45}, {-6, 25, 6, 49},
+		{-44, -16, 44, 12}, {-15, -31, 15, -10}, {-20, 6, 20, 33}, {-37, 9, -10, 34}, {4, 29, 22, 45}, {-6, 25, 6, 49}, {-32, -26, -10, -10},
 	};
 	/** The lychgate at the end of the main path. */
 	static final int GATE_Z = 48;
@@ -590,7 +590,8 @@ final class HqLandscape {
 		Kind[] kinds = Kind.values();
 		for (int i = 0; i < spots.length; i++) {
 			int[] s = spots[i];
-			if (meadowAt(p, s[0], s[1])) {
+			if (meadowAt(p, s[0], s[1]) && !ScreeningRoomBuilder.nearRoom(s[0], s[1]) && !CasinoLoungeBuilder.nearRoom(s[0], s[1])
+				&& !SocialRoomBuilder.nearRoom(s[0], s[1]) && !GalleryRoomBuilder.nearRoom(s[0], s[1]) && !ContentRoomBuilder.nearRoom(s[0], s[1])) {
 				tree(p, s[0], s[1], kinds[s[2]], 100 + i);
 				placed.add(new int[] {s[0], s[1]});
 			}

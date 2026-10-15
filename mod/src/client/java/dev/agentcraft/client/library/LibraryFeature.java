@@ -11,6 +11,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderers;
 import net.minecraft.world.level.block.Blocks;
+import dev.agentcraft.client.foreman.Protocol;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -35,6 +36,13 @@ public final class LibraryFeature {
 		BlockEntityRenderers.register(ModBlockEntities.MEMORY_ARCHIVE, ctx -> new MemoryArchiveRenderer());
 		MemoryIndex.init();
 		DevBridge.registerScreen("library", mc -> new LibraryScreen(null, null));
+		DevBridge.registerScreen("doc", mc -> {
+			Protocol.Doc d = DocScreen.newest();
+			if (d == null) {
+				throw new DevBridge.DevException("no handed-over documents yet (hand_over, or dev.foreman.inject a doc.upsert)");
+			}
+			return new DocScreen(d.id());
+		});
 		StationInteractions.onUse(ModBlocks.MEMORY_ARCHIVE, (player, pos, state, be) -> {
 			String scope = be == null ? "" : be.binding();
 			int k = MemoryArchiveRenderer.rowIndex(player.level(), pos, state, scope);

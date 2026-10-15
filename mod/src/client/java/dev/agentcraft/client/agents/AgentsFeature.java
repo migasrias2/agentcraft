@@ -123,7 +123,14 @@ public final class AgentsFeature {
 			return InteractionResult.PASS;
 		});
 		// right-click an agent: its card (name, state, task, log tail, message/pause/stop)
-		onClick((player, agent) -> Minecraft.getInstance().gui.setScreen(new AgentCardScreen(agent.agentId())));
+		// (an agent holding a document for you opens it instead; Shift+right-click keeps the card)
+		onClick((player, agent) -> {
+			var st = Foreman.state();
+			var doc = st == null || player.isShiftKeyDown() ? null : st.unreadDoc(agent.agentId());
+			if (doc == null || !dev.agentcraft.client.library.DocScreen.open(doc.id())) {
+				Minecraft.getInstance().gui.setScreen(new AgentCardScreen(agent.agentId()));
+			}
+		});
 		DevBridge.registerScreen("agent", mc -> {
 			String id = AgentCardScreen.defaultAgent();
 			if (id == null) {

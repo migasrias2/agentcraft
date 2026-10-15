@@ -114,7 +114,7 @@ public final class Protocol {
 
 	public record Agent(String id, String name, AgentRole role, @Nullable String title, String color, @Nullable String accent, String skin,
 		AgentState state, String activity, Station station, @Nullable String taskId, @Nullable String repoId, @Nullable String worktree,
-		@Nullable Boolean paused, @Nullable Boolean active, @Nullable String engine, @Nullable String model) {
+		@Nullable Boolean paused, @Nullable Boolean active, @Nullable String engine, @Nullable String model, @Nullable String team) {
 		public Agent {
 			name = name == null ? id : name;
 			role = role == null ? AgentRole.UNKNOWN : role;
@@ -132,6 +132,16 @@ public final class Protocol {
 
 		public boolean isPaused() {
 			return paused != null && paused;
+		}
+
+		/** True for the Social Desk agents (Nova, Sable): they sit in the Social room, never in the coding hall. */
+		public boolean isSocial() {
+			return "social".equals(team);
+		}
+
+		/** True for the Content Room agents (Iris, Reel, Vega, Cleo): they sit in the Content room, never in the coding hall. */
+		public boolean isContent() {
+			return "content".equals(team);
 		}
 	}
 
@@ -210,7 +220,8 @@ public final class Protocol {
 	}
 
 	public record ForemanStatus(String version, BackendName backend, AuthStatus auth, @Nullable String message, @Nullable String account,
-		@Nullable Double speed, @Nullable Boolean showcase, @Nullable Double costUsd, @Nullable String userName) {
+		@Nullable Double speed, @Nullable Boolean showcase, @Nullable Double costUsd, @Nullable String userName,
+		@Nullable Boolean autoApprove) {
 		public ForemanStatus {
 			version = version == null ? "?" : version;
 			backend = backend == null ? BackendName.UNKNOWN : backend;
@@ -252,7 +263,10 @@ public final class Protocol {
 	// ------------------------------------------------------------------ Foreman -> mod messages
 
 	public record Snapshot(ForemanStatus foreman, List<Agent> agents, List<Task> tasks, List<Decision> decisions, List<Repo> repos,
-		List<MemoryEntry> memory, @Nullable Goal goal, List<Goal> goals, List<FeedItem> feed, List<AgentLogs> logs) {
+		List<MemoryEntry> memory, @Nullable Goal goal, List<Goal> goals, List<FeedItem> feed, List<AgentLogs> logs, @Nullable List<AgentScreen> screens,
+		@Nullable List<Media> media, @Nullable List<Doc> docs, @Nullable List<SocialPost> socialPosts,
+		@Nullable List<ContentChannel> contentChannels, @Nullable List<ContentVideo> contentVideos, @Nullable List<ContentRef> contentRefs,
+		@Nullable List<ContentStat> contentStats, @Nullable List<ContentChannelStats> contentChannelStats) {
 		public Snapshot {
 			agents = agents == null ? List.of() : List.copyOf(agents);
 			tasks = tasks == null ? List.of() : List.copyOf(tasks);
@@ -262,6 +276,15 @@ public final class Protocol {
 			goals = goals == null ? List.of() : List.copyOf(goals);
 			feed = feed == null ? List.of() : List.copyOf(feed);
 			logs = logs == null ? List.of() : List.copyOf(logs);
+			screens = screens == null ? List.of() : List.copyOf(screens);
+			media = media == null ? List.of() : List.copyOf(media);
+			docs = docs == null ? List.of() : List.copyOf(docs);
+			socialPosts = socialPosts == null ? List.of() : List.copyOf(socialPosts);
+			contentChannels = contentChannels == null ? List.of() : List.copyOf(contentChannels);
+			contentVideos = contentVideos == null ? List.of() : List.copyOf(contentVideos);
+			contentRefs = contentRefs == null ? List.of() : List.copyOf(contentRefs);
+			contentStats = contentStats == null ? List.of() : List.copyOf(contentStats);
+			contentChannelStats = contentChannelStats == null ? List.of() : List.copyOf(contentChannelStats);
 		}
 	}
 
@@ -271,6 +294,198 @@ public final class Protocol {
 	public record AgentLog(String agentId, List<LogEntry> entries) {
 		public AgentLog {
 			entries = entries == null ? List.of() : List.copyOf(entries);
+		}
+	}
+
+	/** A screenshot an agent got from a tool (browser, Roblox Studio, Blender...): base64 PNG/JPEG, throttled by the Foreman. */
+	public record AgentScreen(String agentId, String mime, String data, String tool, long at) {
+		public AgentScreen {
+			mime = mime == null ? "" : mime;
+			data = data == null ? "" : data;
+			tool = tool == null ? "" : tool;
+		}
+	}
+
+	/**
+	 * Something an agent handed the user with show_media: an image (1 frame) or a video (up to ~150 JPEG
+	 * frames, <= 640 px wide, played back at {@code fps}). Frames are base64 images; the mod keeps only
+	 * metadata in {@code ForemanState} and decodes frames in {@code MediaStore}.
+	 */
+	public record Media(String id, String agentId, String kind, String name, @Nullable String caption, String mime, List<String> frames,
+		@Nullable Double fps, @Nullable Long durationMs, @Nullable Boolean hasAudio, long at) {
+		public Media {
+			kind = kind == null ? "image" : kind;
+			name = name == null ? id : name;
+			mime = mime == null ? "" : mime;
+			frames = frames == null ? List.of() : List.copyOf(frames);
+		}
+
+		public boolean isVideo() {
+			return "video".equals(kind);
+		}
+
+		/** Same item without its (large) frames, for the long-lived state. */
+		public Media withoutFrames() {
+			return frames.isEmpty() ? this : new Media(id, agentId, kind, name, caption, mime, List.of(), fps, durationMs, hasAudio, at);
+		}
+	}
+
+	public record MediaAdd(Media item) {
+	}
+
+	/**
+	 * A markdown document an agent handed the user (hand_over): {@code note} is what it says when giving
+	 * it over, {@code read} flips once the user opened it. Replaced by id ({@code doc.upsert}).
+	 */
+	public record Doc(String id, String agentId, String title, String name, @Nullable String path, String markdown, @Nullable String note,
+		@Nullable String taskId, boolean read, long at) {
+		public Doc {
+			title = title == null || title.isBlank() ? (name == null ? id : name) : title;
+			name = name == null ? "" : name;
+			markdown = markdown == null ? "" : markdown;
+		}
+
+		public Doc withRead(boolean r) {
+			return new Doc(id, agentId, title, name, path, markdown, note, taskId, r, at);
+		}
+	}
+
+	public record DocUpsert(Doc doc) {
+	}
+
+	/**
+	 * A Social Desk post (X or LinkedIn) on the calendar. {@code status}: draft, approved, posting, posted, failed,
+	 * cancelled (kept as the wire string so new states degrade gracefully). Times are epoch ms. Replaced by id
+	 * ({@code social.post.upsert}).
+	 */
+	public record SocialPost(String id, String platform, String text, @Nullable Long scheduledAt, String status, @Nullable String authorId,
+		@Nullable String note, @Nullable List<String> mediaPaths, @Nullable String url, @Nullable String error, long createdAt, long updatedAt,
+		@Nullable Long postedAt) {
+		public SocialPost {
+			platform = platform == null ? "x" : platform;
+			text = text == null ? "" : text;
+			status = status == null ? "draft" : status;
+			mediaPaths = mediaPaths == null ? List.of() : List.copyOf(mediaPaths);
+		}
+
+		public boolean isX() {
+			return "x".equals(platform);
+		}
+
+		/** Character limit of the platform (the Foreman can allow longer X posts; this is the usual one). */
+		public int limit() {
+			return isX() ? 280 : 3000;
+		}
+
+		/** Still on the calendar as something that will or may go out (not finished). */
+		public boolean open() {
+			return status.equals("draft") || status.equals("approved") || status.equals("posting") || status.equals("failed");
+		}
+	}
+
+	public record SocialPostUpsert(SocialPost post) {
+	}
+
+	// ------------------------------------------------------------------ Content Room (YouTube channels)
+
+	/** A YouTube channel the Content Room runs. {@code playbook} is the markdown Iris/Vega keep of what works. Replaced by id ({@code content.channel.upsert}). */
+	public record ContentChannel(String id, String name, @Nullable String url, @Nullable String youtubeId, @Nullable String niche,
+		@Nullable String brief, @Nullable String playbook, boolean autopilot, int postsPerWeek, boolean connected, @Nullable String statsSource, long createdAt,
+		long updatedAt) {
+		public ContentChannel {
+			name = name == null ? id : name;
+			postsPerWeek = postsPerWeek <= 0 ? 35 : postsPerWeek;
+		}
+	}
+
+	public record ContentComment(String by, String text, long at) {
+		public ContentComment {
+			by = by == null ? "user" : by;
+			text = text == null ? "" : text;
+		}
+	}
+
+	public record PostMortem(long at, String horizon, String text) {
+		public PostMortem {
+			horizon = horizon == null ? "" : horizon;
+			text = text == null ? "" : text;
+		}
+	}
+
+	/**
+	 * A video in the pipeline. {@code status}: idea, approved, producing, review, scheduled, publishing, published, rejected, failed
+	 * (kept as the wire string so new states degrade gracefully). Times are epoch ms. Replaced by id ({@code content.video.upsert}).
+	 */
+	public record ContentVideo(String id, String channelId, String status, String format, String title, @Nullable String hook, @Nullable String pitch,
+		@Nullable String script, @Nullable String description, @Nullable List<String> tags, @Nullable List<String> refIds, @Nullable String filePath,
+		@Nullable String thumbnailPath, @Nullable Long scheduledAt, @Nullable String url, @Nullable String youtubeVideoId, @Nullable String error,
+		@Nullable String authorId, List<ContentComment> comments, long createdAt, long updatedAt, @Nullable Long publishedAt,
+		@Nullable List<PostMortem> postMortems) {
+		public ContentVideo {
+			status = status == null ? "idea" : status;
+			format = format == null ? "long" : format;
+			title = title == null ? id : title;
+			tags = tags == null ? List.of() : List.copyOf(tags);
+			refIds = refIds == null ? List.of() : List.copyOf(refIds);
+			comments = comments == null ? List.of() : List.copyOf(comments);
+			postMortems = postMortems == null ? List.of() : List.copyOf(postMortems);
+		}
+
+		public boolean isShort() {
+			return "short".equals(format);
+		}
+
+		/** Not finished: still moving through the pipeline (or waiting for the user). */
+		public boolean open() {
+			return !status.equals("published") && !status.equals("rejected");
+		}
+	}
+
+	/** One snapshot of one video ({@code ctr} and {@code avgViewPct} are 0..1; {@code retention} is 21 points, 0..100 % of the video). */
+	public record ContentStat(String videoId, long at, long views, @Nullable Long likes, @Nullable Long comments, @Nullable Double avgViewDurationSec,
+		@Nullable Double avgViewPct, @Nullable Double watchMinutes, @Nullable Long subsGained, @Nullable Long impressions, @Nullable Double ctr,
+		@Nullable List<Double> retention, @Nullable Double stayedToWatchPct, @Nullable Double swipeAwayPct) {
+		public ContentStat {
+			retention = retention == null ? List.of() : List.copyOf(retention);
+		}
+	}
+
+	/** A studied reference video: {@code dir} holds frames/, sheets/, transcript.txt, meta.json, breakdown.md. Replaced by id ({@code content.ref.upsert}). */
+	public record ContentRef(String id, String source, @Nullable String title, @Nullable String channel, @Nullable Double durationSec, @Nullable Long views,
+		@Nullable Long likes, @Nullable String uploadDate, @Nullable String dir, int frameCount, int sheetCount, boolean hasTranscript,
+		@Nullable String studiedBy, long at) {
+		public ContentRef {
+			source = source == null ? "" : source;
+		}
+	}
+
+	public record DailyStat(String date, long views, @Nullable Long subsGained, @Nullable Double watchMinutes) {
+		public DailyStat {
+			date = date == null ? "" : date;
+		}
+	}
+
+	public record ContentChannelStats(String channelId, long at, @Nullable Long subscribers, @Nullable Long totalViews, @Nullable Long videoCount,
+		@Nullable Long views28d, @Nullable Double watchMinutes28d, @Nullable Long subsGained28d, @Nullable List<DailyStat> daily) {
+		public ContentChannelStats {
+			daily = daily == null ? List.of() : List.copyOf(daily);
+		}
+	}
+
+	public record ContentChannelUpsert(ContentChannel channel) {
+	}
+
+	public record ContentVideoUpsert(ContentVideo video) {
+	}
+
+	public record ContentRefUpsert(ContentRef ref) {
+	}
+
+	/** After each analytics sync: the full latest set (stats per video, history included, and the channel-level numbers). */
+	public record ContentStatsMsg(@Nullable List<ContentStat> stats, @Nullable List<ContentChannelStats> channelStats) {
+		public ContentStatsMsg {
+			stats = stats == null ? List.of() : List.copyOf(stats);
+			channelStats = channelStats == null ? List.of() : List.copyOf(channelStats);
 		}
 	}
 

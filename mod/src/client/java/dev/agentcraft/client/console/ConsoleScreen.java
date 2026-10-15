@@ -59,6 +59,16 @@ public class ConsoleScreen extends Screen {
 	private String lastValue = "";
 	private @Nullable Goal pendingGoal;
 	private int repoSel;
+	private int repoTop;
+	private String repoFilter = "";
+	private long repoFilterAt;
+	// picker layout (hit-testing)
+	private int pickX;
+	private int pickY;
+	private int pickW;
+	private int pickRowsY;
+	private int pickRowH = 11;
+	private int pickRowCount;
 	private long errorShownAt;
 
 	// derived per frame
@@ -293,18 +303,22 @@ public class ConsoleScreen extends Screen {
 		String raw = input.value();
 		Intent in = ConsoleCommands.parse(raw, s);
 		if (pendingGoal != null) {
-			List<Repo> choices = pendingGoal.choices();
-			Repo r = choices.get(Math.max(0, Math.min(repoSel, choices.size() - 1)));
-			in = new Goal(pendingGoal.text(), r.id(), List.of());
-			pendingGoal = null;
+			Repo r = selectedRepo();
+			if (r != null) {
+				in = new Goal(pendingGoal.text(), r.id(), List.of());
+			} else if (newRepoSelected()) {
+				in = new ConsoleCommands.RepoNew(repoFilter.strip(), pendingGoal.text(), false);
+			} else {
+				return;
+			}
+			closePicker();
 		} else if (in instanceof Goal g && !g.choices().isEmpty()) {
+			// no repo named in the text: the list opens at the top (most recently used), never at the sticky repo
 			pendingGoal = g;
 			repoSel = 0;
-			for (int i = 0; i < g.choices().size(); i++) {
-				if (g.choices().get(i).id().equals(g.repoId())) {
-					repoSel = i;
-				}
-			}
+			repoTop = 0;
+			repoFilter = "";
+			repoFilterAt = Util.getMillis();
 			return;
 		}
 		if (in instanceof Invalid) {
@@ -384,7 +398,7 @@ public class ConsoleScreen extends Screen {
 		int k = e.key();
 		if (e.isEscape()) {
 			if (pendingGoal != null) {
-				pendingGoal = null;
+				closePicker();
 				return true;
 			}
 			if (popupVisible()) {
@@ -399,25 +413,24 @@ public class ConsoleScreen extends Screen {
 			return true;
 		}
 		if (pendingGoal != null) {
-			List<Repo> choices = pendingGoal.choices();
-			int digit = TextKeys.digit(e);
-			if (digit > 0 && digit <= choices.size()) {
-				repoSel = digit - 1;
+			// digits and letters go to the filter (charTyped); only navigation is handled here
+			int n = pickerRows();
+			if (k == InputConstants.KEY_UP || k == InputConstants.KEY_TAB && e.hasShiftDown()) {
+				moveRepoSel(-1, n);
+			} else if (k == InputConstants.KEY_DOWN || k == InputConstants.KEY_TAB) {
+				moveRepoSel(1, n);
+			} else if (k == InputConstants.KEY_PAGEUP) {
+				moveRepoSel(-MAX_REPO_ROWS, n);
+			} else if (k == InputConstants.KEY_PAGEDOWN) {
+				moveRepoSel(MAX_REPO_ROWS, n);
+			} else if (TextKeys.isEnter(e)) {
 				submit();
-				return true;
+			} else if (k == InputConstants.KEY_BACKSPACE && !repoFilter.isEmpty()) {
+				boolean word = e.hasControlDown() || e.hasAltDown();
+				repoFilter = word ? "" : repoFilter.substring(0, repoFilter.offsetByCodePoints(repoFilter.length(), -1));
+				filterChanged();
 			}
-			if (k == InputConstants.KEY_LEFT || k == InputConstants.KEY_UP || k == InputConstants.KEY_TAB && e.hasShiftDown()) {
-				repoSel = (repoSel - 1 + choices.size()) % choices.size();
-				return true;
-			}
-			if (k == InputConstants.KEY_RIGHT || k == InputConstants.KEY_DOWN || k == InputConstants.KEY_TAB) {
-				repoSel = (repoSel + 1) % choices.size();
-				return true;
-			}
-			if (TextKeys.isEnter(e)) {
-				submit();
-				return true;
-			}
+			return true;
 		}
 		if (TextKeys.isEnter(e)) {
 			if (e.hasShiftDown()) {
@@ -480,14 +493,105 @@ public class ConsoleScreen extends Screen {
 		if (openedByKey && Util.getMillis() - openedAt < 150 && cp == '`') {
 			return true;
 		}
+		if (pendingGoal != null) {
+			if (repoFilter.length() < 60) {
+				repoFilter += e.codepointAsString();
+				filterChanged();
+			}
+			return true;
+		}
 		input.insert(e.codepointAsString());
 		return true;
+	}
+
+	// ------------------------------------------------------------------ repo picker
+
+	private static final int MAX_REPO_ROWS = 8;
+
+	private void closePicker() {
+		pendingGoal = null;
+		repoFilter = "";
+		repoSel = 0;
+		repoTop = 0;
+	}
+
+	private void filterChanged() {
+		repoSel = 0;
+		repoTop = 0;
+		repoFilterAt = Util.getMillis();
+	}
+
+	private void moveRepoSel(int delta, int n) {
+		if (n == 0) {
+			return;
+		}
+		boolean wrap = Math.abs(delta) == 1;
+		int next = repoSel + delta;
+		repoSel = wrap ? (next % n + n) % n : Math.max(0, Math.min(n - 1, next));
+	}
+
+	/** Repos whose name or home-relative path contains the filter text (case-insensitive). */
+	private List<Repo> filteredRepos() {
+		List<Repo> all = pendingGoal == null ? List.of() : pendingGoal.choices();
+		String f = repoFilter.strip().toLowerCase(Locale.ROOT);
+		if (f.isEmpty()) {
+			return all;
+		}
+		String home = System.getProperty("user.home", "");
+		List<Repo> out = new ArrayList<>();
+		for (Repo r : all) {
+			if (r.name().toLowerCase(Locale.ROOT).contains(f) || displayPath(r, home).toLowerCase(Locale.ROOT).contains(f)) {
+				out.add(r);
+			}
+		}
+		return out;
+	}
+
+	private @Nullable Repo selectedRepo() {
+		List<Repo> list = filteredRepos();
+		if (list.isEmpty() || newRepoSelected()) {
+			return null;
+		}
+		return list.get(Math.max(0, Math.min(repoSel, list.size() - 1)));
+	}
+
+	/** The "+ New repo" row (last): the filter is a valid name that no connected repo has yet. */
+	private boolean newRepoRow() {
+		if (pendingGoal == null || !ConsoleCommands.validRepoName(repoFilter)) {
+			return false;
+		}
+		String f = repoFilter.strip();
+		for (Repo r : pendingGoal.choices()) {
+			if (r.name().equalsIgnoreCase(f)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private boolean newRepoSelected() {
+		return newRepoRow() && repoSel >= filteredRepos().size();
+	}
+
+	private int pickerRows() {
+		return filteredRepos().size() + (newRepoRow() ? 1 : 0);
+	}
+
+	private static String displayPath(Repo r, String home) {
+		String rel = RepoRoute.relativePath(r.path(), home);
+		return rel != null ? rel : r.path();
 	}
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent e, boolean doubleClick) {
 		double mx = e.x();
 		double my = e.y();
+		// repo picker rows
+		if (pendingGoal != null && mx >= pickX && mx < pickX + pickW && my >= pickRowsY && my < pickRowsY + pickRowCount * pickRowH) {
+			repoSel = repoTop + (int) ((my - pickRowsY) / pickRowH);
+			submit();
+			return true;
+		}
 		// completion rows
 		if (popupVisible() && mx >= popupX && mx < popupX + popupW && my >= popupY) {
 			int i = (int) ((my - popupY - 5) / popupRowH);
@@ -531,6 +635,10 @@ public class ConsoleScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double x, double y, double scrollX, double scrollY) {
+		if (pendingGoal != null) {
+			moveRepoSel(scrollY > 0 ? -1 : 1, pickerRows());
+			return true;
+		}
 		scroll.scrollBy(scrollY > 0 ? -3 : 3);
 		return true;
 	}
@@ -557,8 +665,8 @@ public class ConsoleScreen extends Screen {
 				hintColor = fb.tone() == Tone.OK ? UiBits.okText() : UiBits.muted();
 			}
 		} else if (pendingGoal != null) {
-			Repo r = pendingGoal.choices().get(Math.max(0, Math.min(repoSel, pendingGoal.choices().size() - 1)));
-			hint = "new goal \u2192 " + r.name();
+			Repo r = selectedRepo();
+			hint = r != null ? "new goal \u2192 " + r.name() : newRepoSelected() ? "new repo ~/" + repoFilter.strip() + " + this goal" + (Foreman.state() != null && Foreman.state().autoApprove() ? " \u00b7 AUTO" : "") : "no repo matches";
 		} else if (intent != null) {
 			ForemanState s = Foreman.state();
 			if (s != null && s.hasData() && s.isStale() && sendsToForeman(intent)) {
@@ -577,7 +685,7 @@ public class ConsoleScreen extends Screen {
 
 	/** Intents that go to the Foreman (everything but the local commands). */
 	private static boolean sendsToForeman(Intent in) {
-		return in instanceof Goal || in instanceof ConsoleCommands.Message || in instanceof ConsoleCommands.Answer || in instanceof ConsoleCommands.RepoAdd
+		return in instanceof Goal || in instanceof ConsoleCommands.Message || in instanceof ConsoleCommands.Answer || in instanceof ConsoleCommands.RepoAdd || in instanceof ConsoleCommands.RepoNew
 			|| in instanceof ConsoleCommands.AgentAction || in instanceof ConsoleCommands.TaskAction;
 	}
 
@@ -800,29 +908,83 @@ public class ConsoleScreen extends Screen {
 	}
 
 	private int drawRepoChooser(GuiGraphicsExtractor g, int bottom) {
-		Goal pg = pendingGoal;
+		List<Repo> list = filteredRepos();
+		int total = pendingGoal.choices().size();
+		boolean newRow = newRepoRow();
+		int all = list.size() + (newRow ? 1 : 0);
+		int n = Math.min(MAX_REPO_ROWS, all);
+		repoSel = Math.max(0, Math.min(repoSel, Math.max(0, all - 1)));
+		if (repoSel < repoTop) {
+			repoTop = repoSel;
+		} else if (repoSel >= repoTop + n) {
+			repoTop = repoSel - n + 1;
+		}
+		repoTop = Math.max(0, Math.min(repoTop, Math.max(0, all - n)));
 		Kit.Padding p = Kit.padding("panel_paper");
-		int h = p.top() + 12 + 16 + p.bottom() - 2;
+		int rows = Math.max(1, n);
+		int h = p.top() + 12 + 13 + rows * pickRowH + p.bottom() - 2;
 		int y = bottom - h;
 		int w = Math.max(panelW, Math.min(fieldW, 300));
 		Panels.panel(g, fieldX, y, w, h);
 		int x = fieldX + p.left();
+		int right = fieldX + w - p.right();
 		g.text(font, "Which repo is this goal for?", x, y + p.top(), UiBits.ink(), false);
-		String hint = "Enter send · 1-" + pg.choices().size() + " pick · Esc back";
-		g.text(font, hint, fieldX + w - p.right() - font.width(hint), y + p.top(), UiBits.muted(), false);
-		int cx = x;
-		int cy = y + p.top() + 13;
-		for (int i = 0; i < pg.choices().size(); i++) {
-			Repo r = pg.choices().get(i);
-			String label = (i + 1) + "  " + r.name();
-			int pw = font.width(label) + 12;
-			if (cx + pw > fieldX + w - p.right()) {
-				break;
+		String hint = "Enter pick \u00b7 \u2191\u2193 move \u00b7 Esc back";
+		g.text(font, hint, right - font.width(hint), y + p.top(), UiBits.muted(), false);
+
+		int fy = y + p.top() + 12;
+		String count = list.size() == total && n == total ? "" : (list.isEmpty() ? "0" : (repoSel + 1)) + " of " + list.size();
+		g.text(font, "filter", x, fy, UiBits.muted(), false);
+		int tx = x + font.width("filter") + 6;
+		if (repoFilter.isEmpty()) {
+			g.text(font, "type to narrow the list, or a new name to create a repo", tx + 3, fy, UiBits.muted(), false);
+		} else {
+			g.text(font, TextUtil.ellipsize(font, repoFilter, right - tx - font.width(count) - 12), tx, fy, UiBits.ink(), false);
+		}
+		if (UiBits.caretOn(repoFilterAt)) {
+			int cx = tx + (repoFilter.isEmpty() ? 0 : Math.min(font.width(repoFilter), right - tx - font.width(count) - 12));
+			g.fill(cx, fy - 1, cx + 1, fy + 9, UiStyle.BRASS);
+		}
+		if (!count.isEmpty()) {
+			g.text(font, count, right - font.width(count), fy, UiBits.muted(), false);
+		}
+
+		int ry = fy + 13;
+		pickX = fieldX;
+		pickW = w;
+		pickRowsY = ry;
+		pickRowCount = n;
+		if (all == 0) {
+			g.text(font, "no repo matches \u201c" + repoFilter + "\u201d", x, ry + 1, UiBits.muted(), false);
+			return y - 2;
+		}
+		String home = System.getProperty("user.home", "");
+		for (int i = 0; i < n; i++) {
+			boolean sel = repoTop + i == repoSel;
+			int rowY = ry + i * pickRowH;
+			if (sel) {
+				g.fill(fieldX + 3, rowY - 1, fieldX + w - 3, rowY + pickRowH - 1, UiStyle.withAlpha(UiStyle.CLAY, 46));
+				g.fill(fieldX + 3, rowY - 1, fieldX + 5, rowY + pickRowH - 1, UiStyle.CLAY);
 			}
-			boolean sel = i == repoSel;
-			Panels.sprite(g, sel ? Kit.button(true, "normal") : Kit.PILL, cx, cy - 1, pw, sel ? 13 : 11);
-			g.text(font, label, cx + 6, cy + 1, sel ? UiBits.panelHi() : UiBits.ink(), false);
-			cx += pw + 4;
+			if (repoTop + i >= list.size()) {
+				String label = "+ New repo \u201c" + repoFilter.strip() + "\u201d";
+				g.text(font, TextUtil.ellipsize(font, label, right - x - 8), x + 3, rowY + 1, UiStyle.BRASS, false);
+				int px = x + 3 + font.width(label) + 8;
+				String where = "~/" + repoFilter.strip();
+				if (right - px >= 40) {
+					g.text(font, TextUtil.ellipsize(font, where, right - px), px, rowY + 1, UiBits.muted(), false);
+				}
+				continue;
+			}
+			Repo r = list.get(repoTop + i);
+			String name = TextUtil.ellipsize(font, r.name(), right - x - 8);
+			g.text(font, name, x + 3, rowY + 1, UiBits.ink(), false);
+			int px = x + 3 + font.width(name) + 8;
+			int room = right - px;
+			String path = displayPath(r, home);
+			if (room >= 40 && !path.equalsIgnoreCase(r.name())) {
+				g.text(font, TextUtil.ellipsize(font, path, room), px, rowY + 1, UiBits.muted(), false);
+			}
 		}
 		return y - 2;
 	}

@@ -11,13 +11,22 @@ import { consoleLogger, type Ctx, type Logger } from './context.js';
 import { DecisionError, DecisionQueue, type CreateDecisionInput } from './decisions.js';
 import { Memory, MemoryError } from './memory.js';
 import { Notifier } from './notifier.js';
+import { DocError, docTitle, pruneDocs, readDoc } from './docs.js';
+import { type VideoLimits, MediaError, MediaHub } from './media.js';
+import { ScreenHub, type ScreenFrame } from './screens.js';
+import { SocialDesk, SocialError } from './social.js';
+import { ContentError, ContentStudio, type ContentExternals } from './content.js';
+import { renderBreakdown, scanChannel, studyVideo } from './videostudy.js';
+import { createYouTubeApi, publicStats } from './youtube.js';
 import type {
   Agent,
   AgentState,
   BackendName,
   ClientMessage,
   Decision,
+  Doc,
   ForemanStatus,
+  Media,
   Goal,
   GoalStatus,
   LogEntry,
@@ -26,9 +35,12 @@ import type {
   Station,
   Task,
 } from './protocol.js';
+import { PERMISSION_OPTIONS } from './protocol.js';
 import { RepoError, RepoManager } from './repos.js';
+import { routeGoal } from './reporoute.js';
 import { Store } from './store.js';
 import { TaskError, TaskGraph } from './taskgraph.js';
+import { Brain } from './brain.js';
 import { setUserName, userName } from './user.js';
 import { truncate } from './util/text.js';
 
@@ -60,6 +72,8 @@ export interface ForemanOptions {
   logger?: Logger;
   notifier?: Notifier;
   now?: () => number;
+  /** the Content Room's yt-dlp/ffmpeg and YouTube collaborators (tests inject fakes); default: the real ones */
+  content?: ContentExternals;
 }
 
 const LOG_TEXT_MAX = 2000;
@@ -71,6 +85,8 @@ export class Foreman {
   readonly tasks: TaskGraph;
   readonly bus: MessageBus;
   readonly memory: Memory;
+  /** the user's notes vault (`--brain`), shared by every profile; undefined when off or missing */
+  readonly brain?: Brain;
   readonly decisions: DecisionQueue;
   readonly repos: RepoManager;
   readonly notifier: Notifier;
@@ -83,6 +99,10 @@ export class Foreman {
   private logBuffers = new Map<string, LogEntry[]>();
   private logTimer: NodeJS.Timeout | undefined;
   private goalTimers = new Set<string>();
+  private screens: ScreenHub;
+  readonly media: MediaHub;
+  readonly social: SocialDesk;
+  readonly content: ContentStudio;
   private closed = false;
 
   constructor(opts: ForemanOptions) {
@@ -91,10 +111,36 @@ export class Foreman {
     this.store = new Store(opts.config.dataDir);
     const now = opts.now ?? Date.now;
     this.ctx = { store: this.store, emit: (m) => this.emit(m), now, log: this.log };
+    this.media = new MediaHub((item) => this.emit({ type: 'media.add', item }), now);
+    this.screens = new ScreenHub(({ agentId, mime, data, tool, at }) => this.emit({ type: 'agent.screen', agentId, mime, data, tool, at }), now);
     this.tasks = new TaskGraph(this.ctx);
     this.bus = new MessageBus(this.ctx);
     this.memory = new Memory(this.ctx, path.join(opts.config.dataDir, 'memory'));
+    if (opts.config.brainDir) {
+      try {
+        this.brain = new Brain(opts.config.brainDir);
+        this.log.info(`brain: ${this.brain.dir}`);
+      } catch (e) {
+        this.log.warn(`brain off: ${(e as Error).message}`);
+      }
+    }
     this.decisions = new DecisionQueue(this.ctx);
+    this.social = new SocialDesk({
+      ctx: this.ctx,
+      bus: this.bus,
+      names: (id) => this.nameOf(id),
+      notify: (level, text) => this.notify(level, text),
+      dir: path.join(opts.config.dataDir, 'social'),
+    });
+    this.content = new ContentStudio({
+      ctx: this.ctx,
+      bus: this.bus,
+      names: (id) => this.nameOf(id),
+      notify: (level, text) => this.notify(level, text),
+      dir: path.join(opts.config.dataDir, 'content'),
+      showMedia: (agentId, file, caption, limits) => this.showMedia(agentId, file, caption, limits),
+      ...(opts.content ?? { study: { studyVideo, renderBreakdown, scanChannel }, youtube: createYouTubeApi(), publicStats: (input) => publicStats(input) }),
+    });
     this.repos = new RepoManager(this.ctx, path.join(opts.config.dataDir, 'worktrees'), { mergeStyle: opts.config.mergeStyle, signMerges: opts.config.signMerges });
     this.notifier =
       opts.notifier ??
@@ -105,6 +151,9 @@ export class Foreman {
     setUserName(opts.config.userName);
     this.status = { version: FOREMAN_VERSION, backend: opts.config.backend, auth: opts.config.backend === 'sim' ? 'ok' : 'unknown', userName: userName() };
     if (opts.config.backend === 'sim') this.status.message = 'Simulated team (sim backend)';
+    // --auto-approve turns it on for this start; otherwise the last in-game choice is kept
+    if (opts.config.autoApprove) this.store.data.settings = { ...this.store.data.settings, autoApprove: true };
+    this.status.autoApprove = this.store.data.settings?.autoApprove === true;
     this.initRoster();
     this.decisions.onCreated((d) => this.onDecisionCreated(d));
   }
@@ -145,8 +194,13 @@ export class Foreman {
           activity: c.role === 'lead' ? 'ready for a goal' : 'off shift',
           station: 'lounge',
           paused: false,
-          active: c.role === 'lead',
+          active: c.role === 'lead' || !!c.team && c.team !== 'studio',
         };
+        if (c.team === 'social' || c.team === 'content') {
+          a.team = c.team;
+          a.station = 'desk';
+          a.activity = 'ready';
+        }
         if (c.accent) a.accent = c.accent;
         agents.push(a);
       } else {
@@ -156,9 +210,31 @@ export class Foreman {
         a.color = c.color;
         if (c.accent) a.accent = c.accent;
         a.role = c.role;
+        if (c.team === 'social' || c.team === 'content') a.team = c.team;
+        else delete a.team;
       }
     }
     this.store.markDirty();
+  }
+
+  /** The Social Desk agents (Nova, Sable): never on the coding team, never given tasks. */
+  isSocial(id: string): boolean {
+    return this.agent(id)?.team === 'social';
+  }
+
+  /** The Content Room agents (Iris, Reel, Vega, Cleo): never on the coding team, never given tasks. */
+  isContent(id: string): boolean {
+    return this.agent(id)?.team === 'content';
+  }
+
+  /** A desk agent: works in a plain folder for the user (Social Desk or Content Room), not on the coding team. */
+  isDesk(id: string): boolean {
+    return this.isSocial(id) || this.isContent(id);
+  }
+
+  /** "the Social Desk" / "the Content Room" for messages. */
+  deskName(id: string): string {
+    return this.isContent(id) ? 'the Content Room' : 'the Social Desk';
   }
 
   agents(): Agent[] {
@@ -258,6 +334,12 @@ export class Foreman {
       if (entries.length) this.emit({ type: 'agent.log', agentId, entries });
     }
     this.logBuffers.clear();
+  }
+
+  /** A tool returned a screenshot: broadcast it (throttled, newest wins). Memory only, not persisted. */
+  agentScreen(agentId: string, frame: ScreenFrame): void {
+    if (this.closed) return;
+    this.screens.push(agentId, frame);
   }
 
   // ---- goals --------------------------------------------------------------------------------
@@ -450,6 +532,75 @@ export class Foreman {
     }
   }
 
+  // ---- settings -----------------------------------------------------------------------------
+
+  /** Agents run tool calls without asking (the policy's "deny" still applies). */
+  get autoApprove(): boolean {
+    return this.status.autoApprove === true;
+  }
+
+  async setAutoApprove(on: boolean): Promise<void> {
+    this.store.data.settings = { ...this.store.data.settings, autoApprove: on };
+    this.store.markDirty();
+    if (this.autoApprove === on) return;
+    this.setStatus({ autoApprove: on });
+    this.bus.feed('system', on ? `Auto-approve ON: agents run tools without asking ${userName()} (git push stays blocked)` : 'Auto-approve OFF: agents ask before risky tools again');
+    if (!on) return;
+    // whatever was already waiting at the podium for a permission goes ahead too
+    for (const d of this.store.data.decisions.filter((x) => x.status === 'open' && x.kind === 'permission')) {
+      await this.answerDecision(d.id, PERMISSION_OPTIONS[0]).catch((e: Error) => this.log.warn(`auto-approve ${d.id}: ${e.message}`));
+    }
+  }
+
+  // ---- media --------------------------------------------------------------------------------
+
+  /** An agent hands the user an image or video (file path or URL): shown in the Screening Room. */
+  async showMedia(agentId: string, source: string, caption?: string, limits?: VideoLimits): Promise<Media> {
+    const item = await this.media.show(agentId, source, caption, limits);
+    const what = item.kind === 'video' ? `a video (${item.name}${item.durationMs ? `, ${Math.round(item.durationMs / 1000)} s` : ''})` : `an image (${item.name})`;
+    this.bus.feed('system', `${this.nameOf(agentId)} put ${what} on the Screening Room screen${item.caption ? `: ${truncate(item.caption, 120)}` : ''}`, { agentId });
+    return item;
+  }
+
+  // ---- documents ----------------------------------------------------------------------------
+
+  docs(): Doc[] {
+    return this.store.data.docs ?? [];
+  }
+
+  /** An agent hands the user a document: it walks over and the user reads it in game. */
+  handOver(agentId: string, file: string, opts: { title?: string; note?: string; taskId?: string } = {}): Doc {
+    const { name, markdown } = readDoc(file);
+    const doc: Doc = {
+      id: this.store.nextId('doc'),
+      agentId,
+      title: docTitle(markdown, name, opts.title),
+      name,
+      path: file,
+      markdown,
+      ...(opts.note?.trim() ? { note: opts.note.trim().slice(0, 300) } : {}),
+      ...(opts.taskId ? { taskId: opts.taskId } : {}),
+      read: false,
+      at: this.ctx.now(),
+    };
+    this.store.data.docs = pruneDocs([...this.docs(), doc]);
+    this.store.markDirty();
+    this.emit({ type: 'doc.upsert', doc });
+    this.bus.feed('system', `${this.nameOf(agentId)} handed you "${doc.title}" (${name}): read it in game`, { agentId, to: 'user' });
+    return doc;
+  }
+
+  markDocRead(docId: string): Doc {
+    const d = this.docs().find((x) => x.id === docId);
+    if (!d) throw new ClientError(`no document "${docId}"`);
+    if (d.read) return d;
+    const next = { ...d, read: true };
+    this.store.data.docs = this.docs().map((x) => (x.id === docId ? next : x));
+    this.store.markDirty();
+    this.emit({ type: 'doc.upsert', doc: next });
+    return next;
+  }
+
   // ---- foreman status -------------------------------------------------------------------------
 
   setStatus(patch: Partial<ForemanStatus>): void {
@@ -467,6 +618,15 @@ export class Foreman {
     const open = decisions.filter((d) => d.status === 'open');
     const recent = decisions.filter((d) => d.status !== 'open').slice(-20);
     const goal = this.currentGoal();
+    const screens = this.screens.fresh();
+    const media = this.media.recent();
+    const docs = this.docs();
+    const socialPosts = this.social.posts();
+    const contentChannels = this.content.channels();
+    const contentVideos = this.content.videos();
+    const contentRefs = this.content.refs();
+    const contentStats = this.content.stats();
+    const contentChannelStats = this.content.channelStats();
     return {
       type: 'snapshot',
       foreman: { ...this.status },
@@ -479,6 +639,15 @@ export class Foreman {
       goals: this.goals().map((g) => ({ ...g })),
       feed: this.store.data.feed.slice(-200),
       logs: this.agents().map((a) => ({ agentId: a.id, entries: this.store.logTail(a.id).slice(-60) })),
+      ...(screens.length ? { screens } : {}),
+      ...(media.length ? { media } : {}),
+      ...(docs.length ? { docs: docs.map((d) => ({ ...d })) } : {}),
+      ...(socialPosts.length ? { socialPosts: socialPosts.map((p) => ({ ...p })) } : {}),
+      ...(contentChannels.length ? { contentChannels } : {}),
+      ...(contentVideos.length ? { contentVideos: contentVideos.map((v) => ({ ...v, comments: v.comments.map((c) => ({ ...c })) })) } : {}),
+      ...(contentRefs.length ? { contentRefs: contentRefs.map((r) => ({ ...r })) } : {}),
+      ...(contentStats.length ? { contentStats: contentStats.map((s) => ({ ...s })) } : {}),
+      ...(contentChannelStats.length ? { contentChannelStats: contentChannelStats.map((s) => ({ ...s })) } : {}),
     };
   }
 
@@ -493,7 +662,7 @@ export class Foreman {
       const result = await this.dispatch(msg, reply);
       ack(true, result ? { result } : {});
     } catch (e) {
-      const known = e instanceof ClientError || e instanceof TaskError || e instanceof RepoError || e instanceof DecisionError || e instanceof MemoryError;
+      const known = e instanceof ClientError || e instanceof MediaError || e instanceof DocError || e instanceof SocialError || e instanceof ContentError || e instanceof TaskError || e instanceof RepoError || e instanceof DecisionError || e instanceof MemoryError;
       const message = known ? (e as Error).message : `internal error: ${(e as Error).message}`;
       if (!known) this.log.error(`${msg.type}: ${(e as Error).stack ?? e}`);
       reply({ type: 'error', message, ...(msg.id ? { re: msg.id } : {}) });
@@ -538,15 +707,55 @@ export class Foreman {
         this.bus.feed('system', `Repo connected: ${r.name} (${r.branch})`);
         return { repoId: r.id };
       }
+      case 'repo.create': {
+        const r = await this.repos.create(msg.name, this.config.newRepoDir);
+        this.bus.feed('system', `New repo created: ${r.name} (${r.path})`);
+        if (msg.autoApprove) await this.setAutoApprove(true);
+        const goal = msg.goal?.trim() ? await this.submitGoal(msg.goal, r.id) : undefined;
+        return { repoId: r.id, path: r.path, ...(goal ? { goalId: goal.id } : {}) };
+      }
+      case 'settings.set':
+        if (msg.autoApprove !== undefined) await this.setAutoApprove(msg.autoApprove);
+        return { autoApprove: this.autoApprove };
+      case 'doc.read':
+        return { docId: this.markDocRead(msg.docId).id };
+      case 'media.open':
+        this.media.open(msg.mediaId);
+        return { mediaId: msg.mediaId };
+      case 'social.post.action': {
+        const post = this.social.act(msg.postId, msg.action, { ...(msg.at !== undefined ? { at: msg.at } : {}), ...(msg.text !== undefined ? { text: msg.text } : {}) });
+        return { postId: post.id, status: post.status };
+      }
+      case 'content.channel.action':
+        return this.content.channelAction(msg.channelId, msg.action, {
+          ...(msg.name !== undefined ? { name: msg.name } : {}),
+          ...(msg.url !== undefined ? { url: msg.url } : {}),
+          ...(msg.niche !== undefined ? { niche: msg.niche } : {}),
+          ...(msg.brief !== undefined ? { brief: msg.brief } : {}),
+          ...(msg.postsPerWeek !== undefined ? { postsPerWeek: msg.postsPerWeek } : {}),
+        });
+      case 'content.video.action': {
+        const video = this.content.act(msg.videoId, msg.action, { ...(msg.text !== undefined ? { text: msg.text } : {}), ...(msg.at !== undefined ? { at: msg.at } : {}) });
+        return { videoId: video.id, status: video.status };
+      }
+      case 'content.ref.open':
+        await this.content.openRef(msg.refId, msg.frame);
+        return { refId: msg.refId };
+      case 'content.video.preview': {
+        const media = await this.content.previewVideo(msg.videoId);
+        return { videoId: msg.videoId, mediaId: media.id };
+      }
     }
   }
 
   async submitGoal(text: string, repoId?: string): Promise<Goal> {
-    const repo = repoId ? this.repos.get(repoId) : this.repos.defaultRepo();
+    const routed = repoId ? undefined : routeGoal(text, this.repos.list());
+    const repo = repoId ? this.repos.get(repoId) : routed ? this.repos.get(routed.repoId) : this.repos.defaultRepo();
     if (repoId && !repo) throw new ClientError(`no repo "${repoId}"`);
     if (!repo) throw new ClientError('no repo connected yet — add one with /repo add <path>');
     if (!this.backend) throw new ClientError('no backend running');
-    const goal = this.createGoal(text, repo.id);
+    if (!repoId && this.repos.list().length > 1) this.bus.feed('system', `Goal → ${repo.name}${routed ? '' : ' (no repo named; most recent)'}`);
+    const goal = this.createGoal(routed?.text ?? text, repo.id);
     await this.backend.submitGoal(goal);
     return goal;
   }
@@ -595,6 +804,7 @@ export class Foreman {
         const id = this.resolveAgentId(arg);
         if (!id) throw new ClientError(`no agent named "${arg}"`);
         if (this.agent(id)?.role === 'lead') throw new ClientError('tasks are assigned to workers, not the lead');
+        if (this.isDesk(id)) throw new ClientError(`${this.nameOf(id)} works for ${this.deskName(id)}, not on the coding team`);
         this.tasks.update(t.id, { assignee: id });
         if (t.status === 'doing') this.tasks.setStatus(t.id, 'todo', { force: true });
         this.bus.feed('task', `Task ${t.id} reassigned to ${this.nameOf(id)}`, { agentId: 'user' });
@@ -610,6 +820,7 @@ export class Foreman {
     if (action === 'pause') this.setAgent(id, { paused: true });
     if (action === 'resume') this.setAgent(id, { paused: false });
     if (action === 'spawn' && arg && !this.tasks.get(arg)) throw new ClientError(`no task "${arg}"`);
+    if (action === 'spawn' && arg && this.isDesk(id)) throw new ClientError(`${this.nameOf(id)} works for ${this.deskName(id)}, not on the coding team`);
     if (action === 'spawn' && arg && this.agent(id)?.role === 'lead') throw new ClientError('tasks are assigned to workers, not the lead');
     if (action === 'spawn') this.setAgent(id, { active: true, paused: false });
     this.bus.feed('system', `${this.nameOf(id)}: ${action}${arg ? ` ${arg}` : ''}`, { agentId: 'user' });
@@ -638,6 +849,8 @@ export class Foreman {
       await this.repos.refresh(r.id).catch((e) => this.log.warn(`refresh ${r.id}: ${(e as Error).message}`));
     }
     this.repos.startPolling(this.config.repoPollMs);
+    this.social.start(); // a post left 'posting' by the last run is failed before anything can publish
+    this.content.start(); // same for a video left 'publishing'
     await backend.start();
   }
 
@@ -645,12 +858,16 @@ export class Foreman {
     if (this.closed) return;
     this.closed = true;
     this.repos.stopPolling();
+    this.social.stop();
+    this.content.stop();
     try {
       await this.backend?.stop();
     } catch (e) {
       this.log.error(`backend stop: ${(e as Error).message}`);
     }
     this.flushLogs();
+    this.screens.close();
+    this.media.close();
     this.notifier.dispose();
     this.store.close();
   }

@@ -50,6 +50,8 @@ public class MonitorRenderer extends StationRenderer<MonitorBlockEntity, Monitor
 		boolean caretOn;
 		float pulse;
 		int worldLight;
+		ScreenFrames.@Nullable Frame frame;
+		long nowMs;
 	}
 
 	/** Pixel density for a panel: 1-block-high (or wide) screens get 128 px/block so a tail of 7 rows fits, bigger ones 96. */
@@ -85,6 +87,7 @@ public class MonitorRenderer extends StationRenderer<MonitorBlockEntity, Monitor
 		int ppb = density(s.panelWidth, s.panelHeight);
 		MonitorScreen m = MonitorFeature.screen(be.getBlockPos());
 		m.lastUsedNanos = now;
+		m.facing = s.facing;
 		if (m.sync(fs, agent, st, ppb, s.panelWidth, s.panelHeight, MonitorFeature.logSeq(agent), MonitorFeature.agentSeq(agent), now)) {
 			DisplayStats.rebuilt(DisplayStats.Kind.MONITOR);
 		}
@@ -97,6 +100,8 @@ public class MonitorRenderer extends StationRenderer<MonitorBlockEntity, Monitor
 		double ph = (ms % pulseMs) / (double) pulseMs;
 		s.pulse = (float) (0.5 - 0.5 * Math.cos(ph * Math.PI * 2));
 		s.worldLight = s.lightCoords;
+		s.nowMs = System.currentTimeMillis();
+		s.frame = m.mode == MonitorScreen.Mode.LIVE ? ScreenFrames.fresh(agent, s.nowMs) : null;
 		DisplayStats.add(DisplayStats.Kind.MONITOR, System.nanoTime() - now);
 	}
 
@@ -125,37 +130,59 @@ public class MonitorRenderer extends StationRenderer<MonitorBlockEntity, Monitor
 		int light = WorldUi.uiLight();
 		m.bg.submit(ps, c);
 		m.dyn.clear();
+		if (m.mode == MonitorScreen.Mode.MEDIA) {
+			MediaScreenDraw.draw(s.nowMs, m, ps, c, font, light);
+			return;
+		}
+		if (m.mode == MonitorScreen.Mode.CALENDAR) {
+			CalendarScreenDraw.draw(s.nowMs, m, ps, c, font, light);
+			return;
+		}
+		if (m.mode == MonitorScreen.Mode.CONTENT) {
+			ContentBoardDraw.draw(m, ps, c, font, light);
+			return;
+		}
+		// ---- live screen frame: the image takes the body, the log shrinks to a strip (or goes away on small panels)
+		ScreenFrames.Frame frame = s.frame;
+		float rowsTop = m.cy0;
+		float shift = s.shift;
+		if (frame != null) {
+			float stripH = (m.cy1 - m.cy0) >= STRIP_MIN_BODY ? 2 * LogRows.LINE + 3 : 0;
+			rowsTop = stripH > 0 ? m.cy1 - stripH : m.cy1;
+			shift = 0;
+			drawFrame(s, m, frame, rowsTop - (stripH > 0 ? 3 : 0), ps, c, font, light);
+		}
 		// ---- log rows, newest at the bottom
-		float bottom = m.cy1 + s.shift;
+		float bottom = m.cy1 + shift;
 		float limit = m.by1 + m.ppb * 2f / 16f - 1; // rows may hide under the bezel, never beyond it
 		boolean overflow = false;
 		float hsum = 0;
 		for (LogRows.Row r : m.rows) {
 			hsum += r.height();
 		}
-		overflow = hsum > m.cy1 - m.cy0;
+		overflow = hsum > m.cy1 - rowsTop;
 		float y = bottom;
 		ps.pushPose();
 		ps.translate(0, 0, Z_TEXT);
-		boolean sliding = s.shift > 0.01f;
+		boolean sliding = shift > 0.01f;
 		boolean feed = m.mode == MonitorScreen.Mode.FEED;
 		List<LogRows.Row> rows = m.rows;
 		for (int i = 0; i < rows.size(); i++) {
 			LogRows.Row r = rows.get(i);
 			float top = y - r.height();
-			if (y <= m.cy0 - 1 || (!sliding && top < m.cy0 - 0.5f)) {
+			if (y <= rowsTop - 1 || (!sliding && top < rowsTop - 0.5f)) {
 				break; // under the header band (rows only pass under it while sliding)
 			}
 			if (y > limit) {
 				y = top;
 				continue;
 			}
-			if (feed && !sliding && r.textX() > 0 && (i + 1 >= rows.size() || top - rows.get(i + 1).height() < m.cy0 - 0.5f)) {
+			if (feed && !sliding && r.textX() > 0 && (i + 1 >= rows.size() || top - rows.get(i + 1).height() < rowsTop - 0.5f)) {
 				break; // a feed item's second line without its first: leave it out
 			}
 			int alpha = 255;
-			if (overflow && top < m.cy0 + LogRows.LINE) {
-				float t = Math.max(0f, Math.min(1f, (top - m.cy0) / LogRows.LINE));
+			if (overflow && top < rowsTop + LogRows.LINE) {
+				float t = Math.max(0f, Math.min(1f, (top - rowsTop) / LogRows.LINE));
 				alpha = (int) (128 + 127 * t);
 			}
 			if (r.tint() != 0) {
@@ -218,6 +245,51 @@ public class MonitorRenderer extends StationRenderer<MonitorBlockEntity, Monitor
 		if (s.stale) {
 			drawOfflineBadge(m, ps, c, font, light);
 		}
+	}
+
+	/** Smallest log body height (px) that still leaves room for a two-row strip under the image. */
+	static final float STRIP_MIN_BODY = 110;
+	private static final float Z_IMAGE = DisplayDraw.Z_STEP;
+	private static final float Z_IMAGE_FRAME = 0.5f * DisplayDraw.Z_STEP;
+
+	/** The live frame, scaled to fit the body above {@code bottom} (aspect kept), with a "LIVE" chip in its corner. */
+	private static void drawFrame(State s, MonitorScreen m, ScreenFrames.Frame f, float bottom, PoseStack ps, SubmitNodeCollector c, Font font, int light) {
+		ScreenStyle st = m.style;
+		float areaW = m.cx1 - m.cx0;
+		float areaH = bottom - m.cy0;
+		if (areaW < 8 || areaH < 8) {
+			return;
+		}
+		float scale = Math.min(areaW / f.thumbW(), areaH / f.thumbH());
+		float w = f.thumbW() * scale;
+		float h = f.thumbH() * scale;
+		float x = m.cx0 + (areaW - w) / 2f;
+		float y = m.cy0 + (areaH - h) / 2f;
+		DisplayDraw.Rects frame = m.imgFrame.clear();
+		frame.add(x - 1, y - 1, x + w + 1, y + h + 1, Z_IMAGE_FRAME, st.rule(), light);
+		frame.submit(ps, c);
+		DisplayDraw.submitTexture(ps, c, f.thumb(), x, y, w, h, Z_IMAGE, 0xFFFFFFFF, light);
+		// label chip, top-left of the image
+		boolean live = f.live(s.nowMs);
+		String label = live ? "LIVE \u00b7 " + f.label() : f.label() + " \u00b7 " + (f.ageMs(s.nowMs) / 1000) + "s ago";
+		float tw = font.width(label);
+		if (tw + 8 > w) {
+			label = live ? "LIVE" : (f.ageMs(s.nowMs) / 1000) + "s";
+			tw = font.width(label);
+		}
+		float cw = tw + (live ? 14 : 8);
+		float chx = x + 3;
+		float chy = y + 3;
+		DisplayDraw.Rects chip = m.imgChip.clear();
+		chip.add(chx, chy, chx + cw, chy + 11, Z_BADGE, st.badgeBg(), light);
+		chip.submit(ps, c);
+		ps.pushPose();
+		ps.translate(0, 0, Z_BADGE_TEXT);
+		if (live) {
+			WorldUi.submitSprite(ps, c, WorldUi.Layer.SOLID, DisplayDraw.dot("working", false), chx + 3, chy + 2, 7, 7, 0f, 0xFFFFFFFF, light);
+		}
+		WorldUi.submitText(ps, c, label, chx + (live ? 12 : 4), chy + 1.5f, st.badgeText(), light);
+		ps.popPose();
 	}
 
 	private static void drawOfflineBadge(MonitorScreen m, PoseStack ps, SubmitNodeCollector c, Font font, int light) {

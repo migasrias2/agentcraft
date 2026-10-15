@@ -155,6 +155,7 @@ public final class AgentManager {
 			assigner.clear();
 			seats.clear();
 			userSpots.clear();
+			DocHandover.clear();
 			level = lvl;
 			layoutRevision = -1;
 		}
@@ -182,10 +183,11 @@ public final class AgentManager {
 		GridPathfinder pf = layout.isEmpty() ? null : new GridPathfinder(lvl, layout.bounds());
 		Vec3 playerFeet = layout.isEmpty() ? null : playerInHq(mc, layout, pf);
 		int waitingIndex = 0;
+		int podiumIndex = 0;
 		int waitingCount = 0;
 		if (playerFeet != null) {
 			for (Agent a : agents) {
-				if (followsPlayer(a)) {
+				if (followsPlayer(st, a)) {
 					waitingCount++;
 				}
 			}
@@ -211,13 +213,26 @@ public final class AgentManager {
 			v.update(a, stale, awaiting.get(a.id()), awaitingCounts.getOrDefault(a.id(), 0));
 			v.station = StationAssigner.stationKey(a);
 			v.anchor = target.name();
-			if (playerFeet != null && !stale && followsPlayer(a)) {
+			boolean offering = !stale && DocHandover.offering(st, a);
+			if (playerFeet != null && !stale && followsPlayer(st, a)) {
 				Anchor near = userSpot(a.id(), e, playerFeet, waitingIndex++, waitingCount, pf);
 				if (near != null) {
 					target = near;
 				}
 			} else {
 				userSpots.remove(a.id());
+				if (offering) {
+					// you are out of reach (outside the HQ): wait at the Decision Podium instead
+					List<Anchor> podium = StationAssigner.slots(layout, AnchorNames.USER);
+					if (!podium.isEmpty()) {
+						target = podium.get(Math.min(podiumIndex++, podium.size() - 1));
+					}
+				}
+			}
+			try {
+				DocHandover.apply(st, e, v, offering);
+			} catch (Throwable t) {
+				AgentCraft.LOGGER.warn("hand-over update failed", t);
 			}
 			Seats.Seat seat = pf == null ? null : seats.at(lvl, target, ticks, pf);
 			Anchor effective = seat != null ? seat.target() : target;
@@ -238,8 +253,8 @@ public final class AgentManager {
 		}
 	}
 
-	private static boolean followsPlayer(Agent a) {
-		return a.state() == AgentState.WAITING_USER && a.isActive() && !a.isPaused();
+	private static boolean followsPlayer(ForemanState st, Agent a) {
+		return a.state() == AgentState.WAITING_USER && a.isActive() && !a.isPaused() || DocHandover.offering(st, a);
 	}
 
 	/**

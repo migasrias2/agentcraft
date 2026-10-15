@@ -38,7 +38,7 @@ export const BEATS: Beat[] = [
   {
     name: 'kickoff',
     async run(d) {
-      for (const a of d.fm.agents()) d.fm.setAgent(a.id, { active: true, paused: false });
+      for (const a of d.fm.agents().filter((x) => !d.fm.isDesk(x.id))) d.fm.setAgent(a.id, { active: true, paused: false });
       const goal = d.fm.goal(d.goalId)!;
       d.act('marlow', 'thinking', 'meeting', 'reading the goal');
       d.log('marlow', 'text', `New goal from ${userName()}: ${goal.text}`);
@@ -471,7 +471,7 @@ Rowan reviews every branch; then it goes to ${userName()} as a merge decision. N
         await d.sleep(600);
       }
       const goalDone = d.fm.goal(d.goalId)?.status === 'done';
-      for (const a of d.fm.agents()) {
+      for (const a of d.fm.agents().filter((x) => !d.fm.isDesk(x.id))) {
         if (a.id === 'marlow') d.act(a.id, goalDone ? 'done' : 'idle', 'meeting', goalDone ? 'goal done' : `waiting on ${t7.id}`);
         else d.act(a.id, 'done', 'lounge', 'done for today');
         d.fm.setAgent(a.id, { taskId: null, worktree: null });

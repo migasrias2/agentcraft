@@ -79,6 +79,76 @@ public final class Foreman {
 		return link.send(ForemanJson.msg("agent.action").put("agentId", agentId).put("action", action).put("arg", arg).json());
 	}
 
+	/** Let agents run tool calls without asking (denied things like git push stay denied). The Foreman re-broadcasts its status. */
+	public static CompletableFuture<Ack> setAutoApprove(boolean on) {
+		return link.send(ForemanJson.msg("settings.set").put("autoApprove", on).json());
+	}
+
+	/** Ask the Foreman to open the original file of a media item in the OS default app (videos play with sound). */
+	public static CompletableFuture<Ack> openMedia(String mediaId) {
+		return link.send(ForemanJson.msg("media.open").put("mediaId", mediaId).json());
+	}
+
+	/** Tell the Foreman the user opened a handed-over document (it comes back as a doc.upsert with read=true). */
+	public static CompletableFuture<Ack> readDoc(String docId) {
+		return link.send(ForemanJson.msg("doc.read").put("docId", docId).json());
+	}
+
+	/**
+	 * Act on a Social Desk post: approve | unapprove | cancel | post_now | schedule. {@code at} = epoch ms (schedule, or approve of a
+	 * post whose time you want set), {@code text} = an edited text applied before the action.
+	 */
+	public static CompletableFuture<Ack> socialAction(String postId, String action, @Nullable Long at, @Nullable String text) {
+		var m = ForemanJson.msg("social.post.action").put("postId", postId).put("action", action);
+		if (at != null) {
+			m.put("at", at);
+		}
+		if (text != null) {
+			m.put("text", text);
+		}
+		return link.send(m.json());
+	}
+
+	/**
+	 * Act on a Content Room channel: add | update | remove | autopilot_on | autopilot_off | sync. {@code channelId} null = add.
+	 * Optional fields (name, url, niche, brief, postsPerWeek) are sent when non-null.
+	 */
+	public static CompletableFuture<Ack> contentChannelAction(@Nullable String channelId, String action, @Nullable String name, @Nullable String url,
+		@Nullable String niche, @Nullable String brief, @Nullable Integer postsPerWeek) {
+		var m = ForemanJson.msg("content.channel.action").put("channelId", channelId).put("action", action).put("name", name).put("url", url)
+			.put("niche", niche).put("brief", brief).put("postsPerWeek", postsPerWeek);
+		return link.send(m.json());
+	}
+
+	/**
+	 * Act on a Content Room video: approve | reject | comment | approve_cut | schedule | publish_now | unschedule | retry.
+	 * {@code text} = comment text / reject reason, {@code at} = epoch ms (approve_cut, schedule).
+	 */
+	public static CompletableFuture<Ack> contentVideoAction(String videoId, String action, @Nullable String text, @Nullable Long at) {
+		return link.send(ForemanJson.msg("content.video.action").put("videoId", videoId).put("action", action).put("text", text).put("at", at).json());
+	}
+
+	/** Show a studied reference's contact sheets (or one frame, 0-based) on the Screening Room screen. */
+	public static CompletableFuture<Ack> contentVideoPreview(String videoId) {
+		return link.send(ForemanJson.msg("content.video.preview").put("videoId", videoId).json());
+	}
+
+	public static CompletableFuture<Ack> contentRefOpen(String refId, @Nullable Integer frame) {
+		return link.send(ForemanJson.msg("content.ref.open").put("refId", refId).put("frame", frame).json());
+	}
+
+	/** New git repo (README + first commit) under the Foreman's new-repo dir; optional goal and AUTO. */
+	public static CompletableFuture<Ack> createRepo(String name, @Nullable String goal, boolean autoApprove) {
+		var m = ForemanJson.msg("repo.create").put("name", name);
+		if (goal != null && !goal.isBlank()) {
+			m.put("goal", goal);
+		}
+		if (autoApprove) {
+			m.put("autoApprove", true);
+		}
+		return link.send(m.json());
+	}
+
 	public static CompletableFuture<Ack> addRepo(String path) {
 		return link.send(ForemanJson.msg("repo.add").put("path", path).json());
 	}

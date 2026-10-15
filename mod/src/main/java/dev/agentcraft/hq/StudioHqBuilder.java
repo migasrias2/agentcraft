@@ -40,6 +40,12 @@ import org.jspecify.annotations.Nullable;
  *   z=24                                    entrance (portico, steps, path south to the gate)
  * </pre>
  *
+ * The Screening Room ({@link ScreeningRoomBuilder}) is built onto the east gable, through a doorway at z 4..5;
+ * the Casino Lounge ({@link CasinoLoungeBuilder}) onto the west gable, through the library wall at z 4..5; the Social Room
+ * ({@link SocialRoomBuilder}) onto the north wall, through a doorway in the big north window (x -1..0); the Gallery
+ * ({@link GalleryRoomBuilder}) onto the north wall west of it, through a 3-wide doorway at x -22..-20; the Content Room
+ * ({@link ContentRoomBuilder}) onto the north wall east of the Social Room (the Gallery's mirror image), through a doorway at x 20..22.
+ *
  * Floor blocks at y=65 (the hall sits one block above the meadow on a mud-brick plinth); agents
  * stand at y=66. Seats follow the agents' seat contract: the chair/armchair block is at the
  * station anchor itself ({@code desk_<id>}, {@code lounge*}, {@code meeting*}), with a free floor
@@ -176,13 +182,19 @@ public final class StudioHqBuilder implements HqBuilder {
 		atrium(p, a);
 		hallLighting(p);
 		HqLandscape.exterior(p);
+		ScreeningRoomBuilder.build(p, a);
+		CasinoLoungeBuilder.build(p, a);
+		SocialRoomBuilder.build(p, a);
+		GalleryRoomBuilder.build(p, a);
+		ContentRoomBuilder.build(p, a);
 		cameras(a);
 		p.settleGrass();
 		long tPlan = System.nanoTime() - tPlan0;
 		BlockState[] previous = PlanStore.load(level.getServer(), ID, SITE, p.size());
 		Plan.Stats st = p.apply(level, previous, options.force());
 		PlanStore.save(level.getServer(), ID, SITE, p.cells());
-		a.bounds(-HX + 1, FLOOR, HZN + 1, HX - 1, FLOOR + 16, AZ + 8);
+		CasinoLoungeBuilder.spawnDealer(level);
+		a.bounds(CasinoLayout.WALL_X + 1, FLOOR, SocialRoomBuilder.minInteriorZ(), ScreeningRoomBuilder.WX - 1, FLOOR + 16, AZ + 8);
 		a.spot(AnchorNames.ENTRANCE, AX, FEET, AZ + 7, 180);
 		a.put(AnchorNames.SPAWN, AX + 0.5, FEET, AZ + 7.5, 180, 0);
 		AgentCraft.LOGGER.info(
@@ -359,7 +371,7 @@ public final class StudioHqBuilder implements HqBuilder {
 		p.set(x, FRIEZE, z, beam(Direction.Axis.X));
 	}
 
-	private static void gableColumn(Plan p, int x, int z) {
+	static void gableColumn(Plan p, int x, int z) {
 		boolean corner = z == HZN || z == HZS;
 		p.set(x, FLOOR, z, PLINTH);
 		if (corner || z == RIDGE_Z || z == -6 || z == 2) {
@@ -1007,8 +1019,7 @@ public final class StudioHqBuilder implements HqBuilder {
 		a.put(AnchorNames.slot(AnchorNames.MERGESTATION, 1), 21.5, FEET, -0.5, -90, 0);
 		a.put(AnchorNames.slot(AnchorNames.MERGESTATION, 2), 21.5, FEET, 1.4, -90, 0);
 		// south-east corner: a cabinet and a floor lamp
-		p.set(xe, FEET, 4, Blocks.BARREL.defaultBlockState());
-		p.set(xe, FEET + 1, 4, St.of(Blocks.POTTED_FERN));
+		// (z 4..5 stays open: the doorway to the Screening Room is in the gable here)
 		floorLamp(p, xe, 3);
 	}
 

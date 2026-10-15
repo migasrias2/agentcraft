@@ -1,8 +1,12 @@
 // The AgentCraft team tools, shared by every engine (Claude: an in-process MCP server named
 // "agentcraft", see claude/tools.ts; Codex: app-server dynamic tools, see codex/engine.ts):
-//   send_message, ask_user, write_memory, read_memory, update_task, report_status, list_tasks
+//   send_message, ask_user, write_memory, read_memory, update_task, report_status, list_tasks, show_media, hand_over
+//   with --brain: search_brain, read_brain, brain_inbox (the user's notes vault, every profile)
 //   lead only: create_task, request_merge
+//   Social Desk (Nova, Sable): no task tools; list_posts + create_post/update_post/cancel_post or mark_posted/mark_failed (socialtools.ts)
+//   Content Room (Iris, Reel, Vega, Cleo): no task tools; channels, videos, study_video, analytics, playbook... (contenttools.ts)
 // Every tool result carries any unread messages for the agent (so mid-turn messages arrive).
+import path from 'node:path';
 import { z } from 'zod';
 import { formatInbox } from '../bus.js';
 import type { Foreman } from '../foreman.js';
@@ -11,6 +15,8 @@ import { MERGE_OPTIONS } from '../protocol.js';
 import { isPrBranch } from '../pulls.js';
 import { truncate } from '../util/text.js';
 import { boardSummary } from './prompts.js';
+import { socialTools } from './socialtools.js';
+import { contentTools } from './contenttools.js';
 import { userName } from '../user.js';
 
 export interface ToolHooks {
@@ -44,11 +50,24 @@ export interface AgentTool {
   handler(args: any): Promise<ToolResult>;
 }
 
+/** The brain tools; only offered when the Foreman has a brain (`--brain`). */
+export const BRAIN_TOOL_NAMES = ['search_brain', 'read_brain', 'brain_inbox'] as const;
+
 /** Names of the team tools for a role (unprefixed). */
 export const TOOL_NAMES = {
-  common: ['send_message', 'ask_user', 'write_memory', 'read_memory', 'update_task', 'report_status', 'list_tasks'],
+  common: ['send_message', 'ask_user', 'write_memory', 'read_memory', 'update_task', 'report_status', 'list_tasks', 'show_media', 'hand_over', ...BRAIN_TOOL_NAMES],
   lead: ['create_task', 'request_merge'],
 } as const;
+
+/** Coding-team tools the Social Desk and the Content Room never see. */
+const DESK_HIDDEN: ReadonlySet<string> = new Set(['update_task', 'list_tasks', 'create_task', 'request_merge']);
+
+type Room = 'studio' | 'social' | 'content';
+const ROOM_NAME: Record<Room, string> = { studio: 'the coding team', social: 'the Social Desk', content: 'the Content Room' };
+
+function roomOf(fm: Foreman, id: string): Room {
+  return fm.isContent(id) ? 'content' : fm.isSocial(id) ? 'social' : 'studio';
+}
 
 function tool<S extends z.ZodRawShape>(name: string, description: string, shape: S, handler: (args: z.infer<z.ZodObject<S>>) => Promise<ToolResult>): AgentTool {
   return { name, description, shape, handler };
@@ -73,7 +92,7 @@ export async function closeIfNoChanges(fm: Foreman, taskId: string): Promise<boo
 }
 
 /** The team tools for one agent's turn (lead: also create_task and request_merge). */
-export function agentTools(fm: Foreman, agentId: string, role: 'lead' | 'worker', hooks: ToolHooks, turn?: TurnHandle): AgentTool[] {
+export function agentTools(fm: Foreman, agentId: string, role: 'lead' | 'worker', hooks: ToolHooks, turn?: TurnHandle, cwd?: string): AgentTool[] {
   const withInbox = (text: string, isError = false): ToolResult => {
     const inbox = fm.bus.inbox(agentId, { markRead: true });
     const extra = inbox.length ? `\n\n[New messages]\n${formatInbox(inbox, (id) => fm.nameOf(id))}` : '';
@@ -81,7 +100,46 @@ export function agentTools(fm: Foreman, agentId: string, role: 'lead' | 'worker'
   };
   const fail = (text: string) => withInbox(`Error: ${text}`, true);
 
+  const room = roomOf(fm, agentId);
   const tools: AgentTool[] = [
+    tool(
+      'hand_over',
+      `Walk over to ${userName()} in the studio and hand them a document to read right there (a book screen in game). Use it for every report, plan, research note, summary or other .md/.txt deliverable ${userName()} should read, as soon as it is written (before update_task). Images and videos go to show_media instead.`,
+      {
+        path: z.string().describe('the .md / .txt file: relative to your working directory, or absolute'),
+        title: z.string().optional().describe('short title (default: its first # heading)'),
+        note: z.string().optional().describe('one line you say as you hand it over'),
+      },
+      async ({ path: p, title, note }) => {
+        if (turn?.signal.aborted) return fail('your turn was stopped');
+        const file = path.resolve(cwd ?? process.cwd(), p.trim().replace(/^~(?=$|[\\/])/, process.env.HOME ?? '~'));
+        try {
+          const taskId = fm.agent(agentId)?.taskId ?? undefined;
+          const doc = fm.handOver(agentId, file, { ...(title ? { title } : {}), ...(note ? { note } : {}), ...(taskId ? { taskId } : {}) });
+          return withInbox(`Handed over "${doc.title}". ${userName()} reads it in game; carry on with your work.`);
+        } catch (e) {
+          return fail((e as Error).message);
+        }
+      },
+    ),
+    tool(
+      'show_media',
+      `Show ${userName()} an image or a video on the big screen in the studio's Screening Room. Use it whenever you made, rendered, downloaded or generated something visual (a screenshot, a render, a generated image or clip) that ${userName()} should see. Videos play there as a silent preview; ${userName()} can open the original with sound.`,
+      {
+        path: z.string().describe('image (png jpg webp gif...) or video (mp4 mov webm...): a file path (relative to your working directory, or absolute) or an http(s) URL'),
+        caption: z.string().optional().describe('one short line: what it is'),
+      },
+      async ({ path: p, caption }) => {
+        if (turn?.signal.aborted) return fail('your turn was stopped');
+        const source = /^https?:\/\//i.test(p.trim()) ? p.trim() : path.resolve(cwd ?? process.cwd(), p.trim().replace(/^~(?=$|[\\/])/, process.env.HOME ?? '~'));
+        try {
+          const item = await fm.showMedia(agentId, source, caption);
+          return withInbox(`On the Screening Room screen now: ${item.kind} ${item.name}${item.kind === 'video' ? ` (${item.frames.length} preview frames)` : ''}.`);
+        } catch (e) {
+          return fail((e as Error).message);
+        }
+      },
+    ),
     tool(
       'send_message',
       `Send a short message to a teammate (id or name), "lead", "all", or "user" (${userName()}; not a question — use ask_user for questions).`,
@@ -91,10 +149,13 @@ export function agentTools(fm: Foreman, agentId: string, role: 'lead' | 'worker'
         if (target === 'lead') target = 'marlow';
         if (!['all', 'user'].includes(target)) {
           const id = fm.resolveAgentId(target);
-          if (!id) return fail(`no teammate "${to}". Team: ${fm.agents().filter((a) => a.active).map((a) => a.id).join(', ')}`);
+          if (!id) return fail(`no teammate "${to}". Team: ${fm.agents().filter((a) => a.active && roomOf(fm, a.id) === room).map((a) => a.id).join(', ')}`);
           target = id;
         }
         if (target === agentId) return fail('you cannot message yourself');
+        // the Social Desk and the Content Room are rooms of their own: the coding team and the desks only talk to the user
+        if (target === 'all' && room !== 'studio') return fail(`send to "user" (or your ${room === 'content' ? 'content room colleagues' : 'desk partner'}): the coding team is not part of ${ROOM_NAME[room]}`);
+        if (target !== 'user' && target !== 'all' && roomOf(fm, target) !== room) return fail(`${fm.nameOf(target)} is ${roomOf(fm, target) === 'studio' ? 'on the coding team' : `in ${ROOM_NAME[roomOf(fm, target)]}`}, not in your room. ${room !== 'studio' ? 'Talk to the user (send_message to "user").' : `Only the user talks to ${ROOM_NAME[roomOf(fm, target)]}.`}`);
         fm.bus.send(agentId, target, text);
         // A worker reads messages only while it works on a task: one with no task would read this
         // whenever its next task starts, so a request sent this way silently never happens.
@@ -202,6 +263,7 @@ export function agentTools(fm: Foreman, agentId: string, role: 'lead' | 'worker'
           if (a.assignee) {
             const id = fm.resolveAgentId(a.assignee);
             if (!id) return fail(`no agent ${a.assignee}`);
+            if (fm.isDesk(id)) return fail(`${fm.nameOf(id)} works for ${fm.deskName(id)}, not on the coding team`);
             fm.tasks.update(t.id, { assignee: id });
           }
           if (a.title) fm.tasks.update(t.id, { title: a.title });
@@ -255,6 +317,7 @@ export function agentTools(fm: Foreman, agentId: string, role: 'lead' | 'worker'
             who = fm.resolveAgentId(assignee);
             if (!who) return fail(`no worker ${assignee}`);
             if (fm.agent(who)?.role === 'lead') return fail('assign tasks to workers, not yourself');
+            if (fm.isDesk(who)) return fail(`${fm.nameOf(who)} works for ${fm.deskName(who)}${fm.isContent(who) ? ' (YouTube channels)' : ' (posts for X and LinkedIn)'}, not on the coding team: assign the task to a coding worker`);
           }
           try {
             const t = fm.tasks.create({
@@ -309,10 +372,60 @@ export function agentTools(fm: Foreman, agentId: string, role: 'lead' | 'worker'
     );
   }
 
+  // the Social Desk has no task board and no merges: its own calendar tools instead
+  if (fm.brain) tools.push(...brainTools(fm, agentId, withInbox, fail));
+  else tools.splice(0, tools.length, ...tools.filter((t) => !(BRAIN_TOOL_NAMES as readonly string[]).includes(t.name)));
+
+  if (room !== 'studio') {
+    const reply = (text: string, isError = false) => withInbox(text, isError);
+    tools.splice(0, tools.length, ...tools.filter((t) => !DESK_HIDDEN.has(t.name)), ...(room === 'content' ? contentTools(fm, agentId, reply, cwd) : socialTools(fm, agentId, reply)));
+  }
+
   // a stopped/aborted turn must not change anything any more, even if its CLI lingers
   for (const t of tools) {
     const inner = t.handler;
     t.handler = async (args) => (turn?.signal.aborted ? fail('your turn was stopped; nothing was changed') : inner(args));
   }
   return tools;
+}
+
+/** search_brain / read_brain / brain_inbox over the user's notes vault (read-only but for Inbox.md). */
+function brainTools(fm: Foreman, agentId: string, reply: (text: string, isError?: boolean) => ToolResult, fail: (text: string) => ToolResult): AgentTool[] {
+  const brain = fm.brain!;
+  return [
+    tool(
+      'search_brain',
+      `Search ${userName()}'s second brain: their notes on every project, preferences, decisions and people (shared across all repos). Check it before asking ${userName()} something they may have told Claude before. Returns ranked note names with a matching line; open one with read_brain.`,
+      { query: z.string().describe('a few keywords, e.g. "moonbase map" or "stack defaults"'), limit: z.number().int().min(1).max(20).optional() },
+      async ({ query, limit }) => {
+        const hits = brain.search(query, limit ?? 8);
+        if (!hits.length) return reply(`No brain notes match "${query}".`);
+        return reply(hits.map((h) => `- [[${h.name}]] (${h.path}): ${h.snippet}`).join('\n'));
+      },
+    ),
+    tool(
+      'read_brain',
+      `Read one note from ${userName()}'s second brain by name ("Moonbase", "[[How I Like To Work]]") or path ("Projects/Moonbase.md"). Start with "Home" for the map of everything.`,
+      { note: z.string() },
+      async ({ note }) => {
+        const n = brain.read(note);
+        if (!n) return fail(`no brain note "${note}" (try search_brain)`);
+        return reply(`# ${n.path}\n\n${truncate(n.text, 12_000)}`);
+      },
+    ),
+    tool(
+      'brain_inbox',
+      `Drop one line into ${userName()}'s brain Inbox for them to file: a fact, decision or preference they told you that future sessions should know. One plain line; never secrets (keys, passwords, tokens) — say where they live instead. Use write_memory for team working notes.`,
+      { line: z.string().describe('one line, plain language, ≤500 characters') },
+      async ({ line }) => {
+        try {
+          const entry = brain.inbox(line, agentId, fm.ctx.now());
+          fm.bus.feed('memory', `${fm.nameOf(agentId)} added to the brain inbox`, { agentId });
+          return reply(`Added to Inbox.md: ${entry}`);
+        } catch (e) {
+          return fail((e as Error).message);
+        }
+      },
+    ),
+  ];
 }

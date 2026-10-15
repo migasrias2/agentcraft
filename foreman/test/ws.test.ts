@@ -63,7 +63,7 @@ describe('WebSocket server + sim backend', () => {
     a.send({ type: 'hello', modVersion: 'test', protocol: 1, client: 'test' });
     await until(() => a.msgs.some((m) => m.type === 'snapshot'));
     const snap = a.msgs.find((m) => m.type === 'snapshot')!;
-    expect(snap.type === 'snapshot' && snap.agents.map((x) => x.id).sort()).toEqual(['juniper', 'kit', 'marlow', 'rowan', 'tove', 'wren']);
+    expect(snap.type === 'snapshot' && snap.agents.map((x) => x.id).sort()).toEqual(['cleo', 'iris', 'juniper', 'kit', 'marlow', 'nova', 'reel', 'rowan', 'sable', 'tove', 'vega', 'wren']);
 
     // invalid message -> error, with ack when it had an id
     a.ws.send(JSON.stringify({ v: 1, id: 'bad1', type: 'goal.submit' }));

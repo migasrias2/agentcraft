@@ -11,7 +11,8 @@
 // state.json is written atomically (temp + fsync + rename), debounced, and flushed on exit.
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Agent, Decision, FeedItem, Goal, LogEntry, Repo, Task } from './protocol.js';
+import type { ContentData } from './content.js';
+import type { Agent, Decision, Doc, FeedItem, Goal, LogEntry, Repo, SocialPost, Task } from './protocol.js';
 import { ensureDir, readJson, writeJsonAtomic } from './util/fsx.js';
 
 export interface BusMessage {
@@ -59,6 +60,14 @@ export interface StateData {
   sessions: Record<string, SessionRecord>;
   worktreeMeta: Record<string, WorktreeMeta>; // key: `${repoId}/${worktreeId}`
   permissionRules: Record<string, string[]>; // agentId -> rule keys always allowed
+  /** user settings changed in game (`settings.set`); absent in older state files */
+  settings?: { autoApprove?: boolean };
+  /** documents agents handed over (`hand_over`); absent in older state files */
+  docs?: Doc[];
+  /** the Social Desk calendar (`social.ts`); absent in older state files */
+  socialPosts?: SocialPost[];
+  /** the Content Room: channels, videos, references, stats (`content.ts`); absent in older state files */
+  content?: ContentData;
   /** opaque backend-owned state (e.g. sim progress) */
   backend: Record<string, unknown>;
 }

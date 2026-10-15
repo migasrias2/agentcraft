@@ -12,6 +12,8 @@ import dev.agentcraft.client.foreman.Protocol.TaskStatus;
 import dev.agentcraft.client.foreman.Protocol.Worktree;
 import dev.agentcraft.client.foreman.Protocol.WorktreeStatus;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -23,14 +25,18 @@ import org.jspecify.annotations.Nullable;
  * thread), no Minecraft types, so every rule here can be exercised with {@code dev.console.parse}.
  *
  * <pre>
- * plain text                       goal.submit (asks which repo when there are several)
+ * plain text                       goal.submit (a repo named in the text or "repo: goal" picks the repo; else asks)
  * @name text  /  @all text         user.message
  * /answer [dN] &lt;n|label&gt; [text]    decision.answer (n is 1-based, as on the decision buttons)
  * /repo add &lt;path&gt;   /repos         repo.add / list repos
+ * /repo new &lt;name&gt; [--auto]        repo.create (a new git repo under your home; --auto turns AUTO on)
  * /pause|/resume|/stop @x [@y|all] agent.action
  * /spawn @x [taskId]               agent.action spawn
  * /task &lt;id&gt; cancel|retry|prioritize [n]|reassign @x
  * /diff [worktree|@agent]          diff review screen (or a summary)
+ * /auto [on|off]                  settings.set autoApprove (agents run tool calls without asking)
+ * /posts /approve <postId|n> /calendar   the Social Desk's posts, approve one, open the calendar
+ * /content                        open the Content Studio (YouTube channels, analytics, references)
  * /status /help /decide /clear /sound on|off
  * </pre>
  */
@@ -40,8 +46,8 @@ public final class ConsoleCommands {
 
 	// ------------------------------------------------------------------ intents
 
-	public sealed interface Intent permits Goal, Message, Answer, RepoAdd, Repos, AgentAction, TaskAction, ShowDiff, Status, Help, Decide, Clear,
-		Sound, Invalid, Empty {
+	public sealed interface Intent permits Goal, Message, Answer, RepoAdd, RepoNew, Repos, AgentAction, TaskAction, ShowDiff, Status, Help, Decide, Clear,
+		Sound, Auto, Docs, Posts, ApprovePost, Calendar, Content, Invalid, Empty {
 	}
 
 	/** {@code repoId} null = the Foreman's default; {@code choices} non-empty = ask which repo first. */
@@ -56,6 +62,24 @@ public final class ConsoleCommands {
 	}
 
 	public record RepoAdd(String path) implements Intent {
+	}
+
+	/** Create a brand-new repo ({@code goal} non-null = start it there; {@code auto} = also turn AUTO on). */
+	public record RepoNew(String name, @Nullable String goal, boolean auto) implements Intent {
+	}
+
+	/** Same rule as the Foreman's repos.create: letters, digits, . _ - space, and / for a sub folder of home. */
+	public static boolean validRepoName(String name) {
+		String n = name.strip();
+		if (n.isEmpty() || n.length() > 120 || !n.matches("[A-Za-z0-9._ -]+(/[A-Za-z0-9._ -]+)*")) {
+			return false;
+		}
+		for (String part : n.split("/")) {
+			if (part.strip().equals(".") || part.strip().equals("..")) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	public record Repos() implements Intent {
@@ -82,7 +106,31 @@ public final class ConsoleCommands {
 	public record Clear() implements Intent {
 	}
 
+	/** {@code ref} null = list the handed-over documents; else a list number or a doc id to open. */
+	public record Docs(@Nullable String ref) implements Intent {
+	}
+
+	/** {@code /posts}: the Social Desk's open posts (draft, approved, failed...), soonest first. */
+	public record Posts() implements Intent {
+	}
+
+	/** {@code /approve <postId|n>}: approve a Social Desk post (n = its number in {@code /posts}). */
+	public record ApprovePost(String ref) implements Intent {
+	}
+
+	/** {@code /calendar}: open the Social Desk calendar screen. */
+	public record Calendar() implements Intent {
+	}
+
+	/** {@code /content}: open the Content Studio screen (the YouTube channels, their analytics and references). */
+	public record Content() implements Intent {
+	}
+
 	public record Sound(@Nullable Boolean on) implements Intent {
+	}
+
+	/** {@code on} null = toggle. */
+	public record Auto(@Nullable Boolean on) implements Intent {
 	}
 
 	public record Invalid(String error) implements Intent {
@@ -97,6 +145,11 @@ public final class ConsoleCommands {
 
 	public static final List<Command> COMMANDS = List.of(
 		new Command("answer", "/answer [d4] <n|option> [text]", "answer an open decision (n = button number)"),
+		new Command("docs", "/docs [n|id]", "documents agents handed you; open one to read it"),
+		new Command("posts", "/posts", "the Social Desk's upcoming posts (Nova drafts, you approve, Sable posts)"),
+		new Command("approve", "/approve <postId|n>", "approve a post from /posts: it goes out at its time"),
+		new Command("calendar", "/calendar", "open the Social Desk calendar"),
+		new Command("content", "/content", "open the Content Studio (YouTube channels, analytics, references)"),
 		new Command("decide", "/decide", "open the decision queue (J)"),
 		new Command("diff", "/diff [worktree|@agent]", "review a worktree's diff"),
 		new Command("pause", "/pause @agent", "pause an agent (keeps its task)"),
@@ -104,9 +157,10 @@ public final class ConsoleCommands {
 		new Command("stop", "/stop @agent", "take an agent off shift"),
 		new Command("spawn", "/spawn @agent [task]", "bring an agent on shift"),
 		new Command("task", "/task <id> cancel|retry|prioritize|reassign", "steer a task"),
-		new Command("repo", "/repo add <path>", "register a local git repo"),
+		new Command("repo", "/repo add <path> | /repo new <name> [--auto]", "connect a git repo, or create a new one"),
 		new Command("repos", "/repos", "list repos"),
 		new Command("status", "/status", "goal, agents, tasks and decisions"),
+		new Command("auto", "/auto [on|off]", "agents run tools without asking (toggle); denied things stay denied"),
 		new Command("sound", "/sound on|off", "decision bell and done chime"),
 		new Command("clear", "/clear", "clear the console's own lines"),
 		new Command("help", "/help", "this list"));
@@ -136,7 +190,25 @@ public final class ConsoleCommands {
 		if (repos.size() <= 1) {
 			return new Goal(text, repos.isEmpty() ? null : repos.get(0).id(), List.of());
 		}
-		return new Goal(text, defaultRepo(s), repos);
+		var routed = RepoRoute.route(text, repos, System.getProperty("user.home", ""));
+		if (routed.isPresent()) {
+			return new Goal(routed.get().text(), routed.get().repoId(), List.of());
+		}
+		return new Goal(text, null, byRecentUse(repos, s));
+	}
+
+	/** Repos most recently used for a goal first, then the rest alphabetically. */
+	static List<Repo> byRecentUse(List<Repo> repos, ForemanState s) {
+		Map<String, Long> last = new HashMap<>();
+		for (var g : s.goals().values()) {
+			if (g.repoId() != null) {
+				last.merge(g.repoId(), Math.max(g.updatedAt(), g.createdAt()), Math::max);
+			}
+		}
+		List<Repo> sorted = new ArrayList<>(repos);
+		sorted.sort(Comparator.comparingLong((Repo r) -> -last.getOrDefault(r.id(), 0L))
+			.thenComparing(r -> r.name().toLowerCase(Locale.ROOT)));
+		return sorted;
 	}
 
 	/** The repo a new goal goes to by default: the current goal's repo, else the most recently added. */
@@ -183,11 +255,29 @@ public final class ConsoleCommands {
 			case "diff" -> parseDiff(args, s);
 			case "status", "st" -> new Status();
 			case "help", "h", "?" -> new Help(args.isEmpty() ? null : args.get(0).replace("/", ""));
+			case "docs", "doc", "documents" -> new Docs(args.isEmpty() ? null : args.get(0));
+			case "posts", "social" -> new Posts();
+			case "approve" -> args.isEmpty() ? new Invalid("which post? /approve <postId> (see /posts)") : new ApprovePost(args.get(0));
+			case "calendar", "cal" -> new Calendar();
+			case "content", "youtube" -> new Content();
 			case "decide", "decisions", "d" -> new Decide(args.isEmpty() ? null : args.get(0));
 			case "clear", "cls" -> new Clear();
 			case "sound", "sounds", "mute" -> parseSound(cmd, args);
+			case "auto", "autoapprove", "yolo" -> parseAuto(args);
 			case "goal" -> rest.isEmpty() ? new Invalid("type the goal after /goal") : goal(rest, s);
 			default -> new Invalid("unknown command /" + cmd + " (/help lists them)");
+		};
+	}
+
+	private static Intent parseAuto(List<String> args) {
+		if (args.isEmpty()) {
+			return new Auto(null);
+		}
+		return switch (args.get(0).toLowerCase(Locale.ROOT)) {
+			case "on", "1", "yes", "true" -> new Auto(true);
+			case "off", "0", "no", "false" -> new Auto(false);
+			case "toggle" -> new Auto(null);
+			default -> new Invalid("/auto, /auto on or /auto off");
 		};
 	}
 
@@ -213,8 +303,17 @@ public final class ConsoleCommands {
 		if (sub.equals("list") || sub.equals("ls")) {
 			return new Repos();
 		}
+		if (sub.equals("new") || sub.equals("create")) {
+			List<String> parts = new ArrayList<>(args.subList(1, args.size()));
+			boolean auto = parts.removeIf(x -> x.equalsIgnoreCase("--auto") || x.equalsIgnoreCase("auto"));
+			String name = String.join(" ", parts).strip();
+			if (!validRepoName(name)) {
+				return new Invalid("usage: /repo new <name> [--auto]  (letters, numbers, - _ . ; e.g. pixel-garden or Desktop/pixel-garden)");
+			}
+			return new RepoNew(name, null, auto);
+		}
 		if (!sub.equals("add")) {
-			return new Invalid("usage: /repo add <path to a local git repo>");
+			return new Invalid("usage: /repo add <path> or /repo new <name>");
 		}
 		String path = rest.strip().substring(3).strip();
 		if (path.length() >= 2 && (path.startsWith("\"") && path.endsWith("\"") || path.startsWith("'") && path.endsWith("'"))) {
@@ -478,10 +577,11 @@ public final class ConsoleCommands {
 	/** One short line for the right side of the input: what Enter will do. Null = nothing to say. */
 	public static @Nullable String describe(Intent in, ForemanState s) {
 		return switch (in) {
-			case Goal g -> g.repoId() == null ? "new goal" : "new goal → " + repoName(g.repoId(), s);
+			case Goal g -> !g.choices().isEmpty() ? "new goal \u00b7 Enter picks a repo" : g.repoId() == null ? "new goal" : "new goal → " + repoName(g.repoId(), s);
 			case Message m -> m.to().equals("all") ? "message everyone" : "message " + displayName(m.to(), s);
 			case Answer a -> "answer " + a.decision().id() + (a.option() != null ? ": " + a.option() : ": free text");
 			case RepoAdd r -> "add repo";
+			case RepoNew r -> "create repo ~/" + r.name() + (r.goal() != null ? " and start the goal" : "") + (r.auto() ? " · AUTO on" : "");
 			case Repos r -> "list repos";
 			case AgentAction a -> a.action() + " " + (a.agentIds().size() == 1 ? displayName(a.agentIds().get(0), s) : a.agentIds().size() + " agents");
 			case TaskAction t -> t.action() + " " + t.taskId();
@@ -489,8 +589,14 @@ public final class ConsoleCommands {
 			case Status st -> "show status";
 			case Help h -> "show help";
 			case Decide d -> "open decisions";
+			case Docs d -> d.ref() == null ? "list documents" : "open document " + d.ref();
+			case Posts po -> "list the Social Desk's posts";
+			case ApprovePost ap -> "approve post " + ap.ref();
+			case Calendar ca -> "open the Social Desk calendar";
+			case Content co -> "open the Content Studio";
 			case Clear c -> "clear console";
 			case Sound so -> so.on() == null ? "sound status" : so.on() ? "sound on" : "sound off";
+			case Auto au -> au.on() == null ? "toggle AUTO (run tools without asking)" : au.on() ? "AUTO on" : "AUTO off";
 			case Invalid i -> null;
 			case Empty e -> null;
 		};
@@ -603,6 +709,15 @@ public final class ConsoleCommands {
 			case "/repo" -> {
 				if (argIndex == 1 && "add".startsWith(lower)) {
 					out.add(new Completion(ts, cursor, "add ", "add", "register a local git repo", null, null));
+				}
+			}
+			case "/auto" -> {
+				if (argIndex == 1) {
+					for (String o : List.of("on", "off")) {
+						if (o.startsWith(lower)) {
+							out.add(new Completion(ts, cursor, o, o, null, null, null));
+						}
+					}
 				}
 			}
 			case "/sound" -> {
@@ -778,6 +893,11 @@ public final class ConsoleCommands {
 				m.put("text", a.text());
 			}
 			case RepoAdd r -> m.put("path", r.path());
+			case RepoNew r -> {
+				m.put("name", r.name());
+				m.put("goal", r.goal());
+				m.put("auto", r.auto());
+			}
 			case AgentAction a -> {
 				m.put("agents", a.agentIds());
 				m.put("action", a.action());
